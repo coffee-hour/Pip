@@ -3,6 +3,11 @@
 Default config is about 9.7M parameters: vocab 2048, 6 layers, 8 heads, width 352, context 256.
 The small vocabulary keeps the embedding table (2048 x 352 = 0.72M, tied with the output head)
 small, so most parameters sit in the transformer blocks where they help learning.
+
+KV cache: forward() takes an optional past (one (k, v) pair per layer) and use_cache flag. With
+use_cache=False (the default) the call and its return value are the same as before, so training
+and old checkpoints are unaffected. With use_cache=True it returns (logits, loss, presents) so the
+generator can feed one new token at a time instead of recomputing the whole context.
 """
 import math
 from dataclasses import dataclass
@@ -38,17 +43,29 @@ class CausalSelfAttention(nn.Module):
         )
         self.register_buffer("causal_mask", mask, persistent=False)
 
-    def forward(self, x):
+    def forward(self, x, past=None, use_cache=False):
         B, T, C = x.shape
         q, k, v = self.qkv(x).split(C, dim=2)
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        if past is not None:
+            k = torch.cat([past[0], k], dim=2)
+            v = torch.cat([past[1], v], dim=2)
+        present = (k, v) if use_cache else None
+        S = k.size(2)
         att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        att = att.masked_fill(self.causal_mask[:, :, :T, :T] == 0, float("-inf"))
+        if past is None:
+            att = att.masked_fill(self.causal_mask[:, :, :T, :T] == 0, float("-inf"))
+        else:
+            # New query row i sits at absolute position (S - T) + i and may see keys 0..that position.
+            rows = torch.arange(T, device=x.device).view(T, 1) + (S - T)
+            cols = torch.arange(S, device=x.device).view(1, S)
+            allowed = cols <= rows
+            att = att.masked_fill(~allowed.view(1, 1, T, S), float("-inf"))
         att = self.attn_drop(F.softmax(att, dim=-1))
         y = (att @ v).transpose(1, 2).contiguous().view(B, T, C)
-        return self.resid_drop(self.proj(y))
+        return self.resid_drop(self.proj(y)), present
 
 
 class MLP(nn.Module):
@@ -70,10 +87,11 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(cfg.n_embd)
         self.mlp = MLP(cfg)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln1(x))
+    def forward(self, x, past=None, use_cache=False):
+        a, present = self.attn(self.ln1(x), past, use_cache)
+        x = x + a
         x = x + self.mlp(self.ln2(x))
-        return x
+        return x, present
 
 
 class PipLM(nn.Module):
@@ -97,17 +115,22 @@ class PipLM(nn.Module):
         elif isinstance(m, nn.Embedding):
             nn.init.normal_(m.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, past=None, use_cache=False, pos_offset=0):
         B, T = idx.shape
-        assert T <= self.cfg.block_size, "sequence longer than block_size"
-        pos = torch.arange(T, device=idx.device)
+        assert pos_offset + T <= self.cfg.block_size, "sequence longer than block_size"
+        pos = torch.arange(pos_offset, pos_offset + T, device=idx.device)
         x = self.drop(self.tok_emb(idx) + self.pos_emb(pos))
-        for block in self.blocks:
-            x = block(x)
+        presents = []
+        for i, block in enumerate(self.blocks):
+            layer_past = past[i] if past is not None else None
+            x, present = block(x, layer_past, use_cache)
+            presents.append(present)
         logits = self.lm_head(self.ln_f(x))
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        if use_cache:
+            return logits, loss, presents
         return logits, loss
 
     def num_parameters(self):

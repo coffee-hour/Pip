@@ -10,6 +10,7 @@ Reply protocol. Pip may put these tags in a reply. Text outside the tags is what
   REMEMBER[fact]          save a fact. REMEMBER[key: value] also sets profile[key].
   READ_FILE[name]         read a file from pip_files/ (no approval needed)
   WRITE_FILE[name, text]  write a file in pip_files/ (you approve first)
+  KNOWLEDGE[query]        search the .txt and .md files in pip_files/ (no approval, no network)
   SEARCH[query]           web search (you approve first)
   OBSERVATION[...]        written by the runtime only. Pip text containing it is removed.
 Every tag is optional. A missing or invalid tag keeps the previous value.
@@ -18,13 +19,15 @@ Turn loop: when Pip emits a tool tag, the runtime cuts the reply there, runs the
 OBSERVATION[result] to the prompt, and lets Pip continue. At most 2 tool rounds per turn.
 
 Context: before each turn, the most relevant saved facts are placed at the head of the prompt as
-FACTS: [...], within a fixed character budget.
+FACTS: [...], within a fixed character budget. Relevant snippets from pip_files/*.txt and *.md are
+added after them as DOCS: [...], also within a budget. Nothing leaves the machine for either.
 
 Vault: an optional master passphrase (vault.py) is asked for before memory loads. /lock locks the
 session and asks again. /password sets, changes, or removes it. The lock does not encrypt files on disk.
 
 Usage: python pip_companion.py [--ckpt checkpoints/pip.pt] [--no-color]
-Commands: /web <query>, /remember <fact>, /facts, /files, /lock, /password, /clear, /help, /quit
+Commands: /web <query>, /docs <query>, /remember <fact>, /facts, /files, /lock, /password, /clear,
+          /help, /quit
 """
 import argparse
 import getpass
@@ -51,12 +54,20 @@ FILL = "#"
 
 MAX_CONTEXT_CHARS = 360   # budget for the FACTS line (about 90 tokens with the byte BPE)
 MAX_CONTEXT_FACTS = 8
+MAX_DOC_CONTEXT_CHARS = 360  # budget for the DOCS line
+MAX_DOC_HITS = 3
+MAX_DOC_FILES = 50
+MAX_DOC_READ = 200000        # bytes of each doc read at most
+MAX_DOC_CHUNK = 400          # characters per snippet
 MAX_TOOL_ROUNDS = 2
 MAX_NEW_TOKENS = 120
 MAX_FILE_CHARS = 4000
 MAX_OBS_CHARS = 700
 FILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,58}\.[A-Za-z0-9]{1,8}$")
 WORD_RE = re.compile(r"[a-z]{3,}")
+DOC_EXTS = (".txt", ".md")
+STOPWORDS = {"the", "and", "for", "what", "how", "you", "are", "that", "this", "with", "from",
+             "can", "does", "have", "was", "were", "will", "about", "tell", "me", "you", "his", "her"}
 
 # Presets are defaults only. Pip can name any mood and give it any hex color in a reply.
 PRESET_MOODS = {
@@ -96,8 +107,9 @@ TAG_REMEMBER = re.compile(r"REMEMBER\[([^\]]*)\]", re.I)
 TAG_SEARCH = re.compile(r"SEARCH\[([^\]]*)\]", re.I)
 TAG_READ = re.compile(r"READ_FILE\[([^\]]*)\]", re.I)
 TAG_WRITE = re.compile(r"WRITE_FILE\[([^,\]]*),([^\]]*)\]", re.I)
+TAG_KNOWLEDGE = re.compile(r"KNOWLEDGE\[([^\]]*)\]", re.I)
 TAG_OBS = re.compile(r"OBSERVATION\[[^\]]*\]", re.I)
-TOOL_TAGS = [("search", TAG_SEARCH), ("read", TAG_READ), ("write", TAG_WRITE)]
+TOOL_TAGS = [("search", TAG_SEARCH), ("read", TAG_READ), ("write", TAG_WRITE), ("knowledge", TAG_KNOWLEDGE)]
 
 MOOD_KEYWORDS = [
     ("overwhelmed", r"\b(too much|overwhelm\w*|stress\w*|swamped|tired|exhaust\w*)\b"),
@@ -199,10 +211,67 @@ def context_facts(memory, query):
     return [f for _, f in picked]
 
 
+# ---------- local docs (pip_files/*.txt and *.md) ----------
+
+def doc_chunks():
+    """Split every .txt and .md file in pip_files/ into paragraphs. Returns [(file name, text)]."""
+    chunks = []
+    if not os.path.isdir(FILES_DIR):
+        return chunks
+    names = sorted(n for n in os.listdir(FILES_DIR) if n.lower().endswith(DOC_EXTS))[:MAX_DOC_FILES]
+    for name in names:
+        path = os.path.join(FILES_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                body = f.read(MAX_DOC_READ)
+        except OSError:
+            continue
+        for para in re.split(r"\n\s*\n", body):
+            para = " ".join(para.split())
+            if para:
+                chunks.append((name, para[:MAX_DOC_CHUNK]))
+    return chunks
+
+
+def search_docs(query, limit=MAX_DOC_HITS):
+    """Keyword search over the local docs. Returns up to limit (file name, paragraph) pairs."""
+    qwords = set(WORD_RE.findall((query or "").lower())) - STOPWORDS
+    if not qwords:
+        return []
+    need = min(2, len(qwords))
+    scored = []
+    for name, chunk in doc_chunks():
+        overlap = len(qwords & set(WORD_RE.findall(chunk.lower())))
+        if overlap >= need:
+            scored.append((overlap, name, chunk))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [(name, chunk) for _, name, chunk in scored[:limit]]
+
+
+def clean_doc(text):
+    return text.replace("[", "(").replace("]", ")")
+
+
+def doc_context(query):
+    """The DOCS line text for a query, within budget. Empty string when nothing matches."""
+    parts, used = [], 0
+    for name, chunk in search_docs(query):
+        piece = name + ": " + clean_doc(chunk)
+        if used + len(piece) + 2 > MAX_DOC_CONTEXT_CHARS:
+            break
+        parts.append(piece)
+        used += len(piece) + 2
+    return "; ".join(parts)
+
+
 def build_prompt(memory, text):
     facts = context_facts(memory, text)
     head = ("FACTS: [" + "; ".join(facts) + "]\n") if facts else ""
-    return head + "User: " + text + "\nPip:"
+    docs = doc_context(text)
+    dhead = ("DOCS: [" + docs + "]\n") if docs else ""
+    return head + dhead + "User: " + text + "\nPip:"
 
 
 # ---------- mood and reply protocol ----------
@@ -260,7 +329,8 @@ def parse_reply(raw):
         thought = " ".join(t.group(1).split())[:300] or None
     remember_values = [r.strip() for r in TAG_REMEMBER.findall(raw) if r.strip()]
     text = raw
-    for pattern in (TAG_MOOD, TAG_SPRITE, TAG_THOUGHT, TAG_REMEMBER, TAG_SEARCH, TAG_READ, TAG_WRITE, TAG_OBS):
+    for pattern in (TAG_MOOD, TAG_SPRITE, TAG_THOUGHT, TAG_REMEMBER, TAG_SEARCH, TAG_READ, TAG_WRITE,
+                    TAG_KNOWLEDGE, TAG_OBS):
         text = pattern.sub("", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return {"text": text, "mood": mood, "sprite": sprite, "thought": thought, "remember": remember_values}
@@ -370,6 +440,15 @@ def run_tool(kind, match, memory, approve, notes):
         result = write_pip_file(name, content)
         notes.append(result)
         return result
+    if kind == "knowledge":
+        query = match.group(1).strip()[:200]
+        if not query:
+            return "empty knowledge query"
+        notes.append("searched local docs: " + query)
+        hits = search_docs(query)
+        if not hits:
+            return "no matching local documents"
+        return "; ".join(name + ": " + clean_doc(chunk) for name, chunk in hits)
     return "unknown tool"
 
 
@@ -635,6 +714,7 @@ def rules_reply(text, memory):
 HELP = (
     "Commands:\n"
     "  /web <query>     ask Pip to search the web (you approve first)\n"
+    "  /docs <query>    search the .txt and .md files in pip_files/ (offline)\n"
     "  /remember <fact> save a fact to memory.json\n"
     "  /facts           list saved facts and profile\n"
     "  /files           list files in pip_files/\n"
@@ -711,6 +791,13 @@ def main():
         if text == "/files":
             names = sorted(os.listdir(FILES_DIR)) if os.path.isdir(FILES_DIR) else []
             print(paint("gray", "\n".join(names) or "No files in pip_files/ yet."))
+            continue
+        if text.startswith("/docs "):
+            hits = search_docs(text[len("/docs "):].strip())
+            if not hits:
+                print(paint("gray", "No matching lines in pip_files/*.txt or *.md."))
+            for name, chunk in hits:
+                print(paint("gray", name + ": " + chunk))
             continue
         if text == "/clear":
             memory["history"] = []

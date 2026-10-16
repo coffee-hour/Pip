@@ -6,7 +6,14 @@ Usage: python server.py [--port 8000] [--ckpt checkpoints/pip.pt]
 Binds to 127.0.0.1 only, so nothing on your network can reach it. Open the page in your
 browser (in Codespaces: Ports tab, port 8000, Open in Browser).
 
+Passphrase: if a vault passphrase is set (vault.json), the server asks for it in the terminal
+before loading memory. The browser then shows a sign-in page, and every /api route except
+/api/login needs a session cookie from a correct sign-in. Sessions live in memory only, so a
+restart asks again. With no passphrase set, the page and API are open, as before.
+
 API:
+  POST /api/login {passphrase}    sign in. Sets an HttpOnly session cookie. 401 on a wrong passphrase.
+  POST /api/logout {}             end the session
   GET  /api/state                 mood {name, hex, sprite}, brain mode, facts, profile, recent history
   POST /api/chat     {text}       reply {reply, thought, notes, mood, brain}. Tags (MOOD, SPRITE,
                                   THOUGHT, REMEMBER, tool tags) are handled and never shown as text.
@@ -21,20 +28,81 @@ API:
 import argparse
 import json
 import os
+import secrets
 import threading
+import time
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 import pip_companion as pc
+import vault
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(ROOT, "web")
 MAX_BODY = 64 * 1024
 MAX_TEXT = 2000
+SESSION_COOKIE = "pip_session"
+PUBLIC_POST = ("/api/login", "/api/logout")
 
 LOCK = threading.Lock()
-MEM = pc.load_memory()
+SESSIONS = set()
+MEM = None
 BRAIN = None
+
+LOGIN_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pip sign in</title>
+<style>
+body{background:#000;color:#ddd;font-family:monospace;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+form{display:flex;flex-direction:column;gap:12px;width:260px}
+input,button{font:inherit;padding:8px;background:#111;color:#eee;border:1px solid #444}
+button{cursor:pointer}
+#msg{color:#f88;min-height:1.2em}
+</style></head>
+<body>
+<form id="f">
+<div>PIP is locked</div>
+<input id="p" type="password" autocomplete="current-password" placeholder="passphrase" required>
+<button type="submit">Unlock</button>
+<div id="msg"></div>
+</form>
+<script>
+document.getElementById("f").addEventListener("submit", async function (e) {
+  e.preventDefault();
+  var msg = document.getElementById("msg");
+  msg.textContent = "";
+  var r = await fetch("/api/login", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({passphrase: document.getElementById("p").value})
+  });
+  if (r.ok) { location.reload(); } else { msg.textContent = "Wrong passphrase."; }
+});
+</script>
+</body></html>
+"""
+
+
+def session_token(headers):
+    jar = SimpleCookie()
+    try:
+        jar.load(headers.get("Cookie", ""))
+    except Exception:
+        return None
+    morsel = jar.get(SESSION_COOKIE)
+    return morsel.value if morsel is not None else None
+
+
+def authed(headers):
+    """True when no passphrase is set, or when the request carries a valid session cookie."""
+    if not vault.vault_exists():
+        return True
+    token = session_token(headers)
+    if not token:
+        return False
+    with LOCK:
+        return any(secrets.compare_digest(token, s) for s in SESSIONS)
 
 
 def state_payload():
@@ -126,25 +194,74 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # keep the terminal quiet; the page shows what matters
 
-    def _send(self, code, data, ctype):
+    def _send(self, code, data, ctype, extra_headers=()):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in extra_headers:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
 
-    def _json(self, code, obj):
+    def _json(self, code, obj, extra_headers=()):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8")
+                   "application/json; charset=utf-8", extra_headers)
+
+    def _read_body(self):
+        """Return the parsed JSON object, or None after sending an error response."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY:
+            self._json(413, {"error": "body too large or invalid"})
+            return None
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            self._json(400, {"error": "invalid JSON"})
+            return None
+        if not isinstance(body, dict):
+            self._json(400, {"error": "JSON object expected"})
+            return None
+        return body
+
+    def _login(self):
+        body = self._read_body()
+        if body is None:
+            return
+        if not vault.vault_exists():
+            return self._json(200, {"ok": True, "message": "no passphrase is set"})
+        phrase = body.get("passphrase")
+        if not isinstance(phrase, str) or not vault.check_passphrase(phrase):
+            time.sleep(1.0)  # slow down guessing
+            return self._json(401, {"error": "wrong passphrase"})
+        token = secrets.token_urlsafe(32)
+        with LOCK:
+            SESSIONS.add(token)
+        cookie = f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"
+        self._json(200, {"ok": True}, [("Set-Cookie", cookie)])
+
+    def _logout(self):
+        token = session_token(self.headers)
+        if token:
+            with LOCK:
+                SESSIONS.discard(token)
+        cookie = f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+        self._json(200, {"ok": True}, [("Set-Cookie", cookie)])
 
     def do_GET(self):
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
+            if not authed(self.headers):
+                return self._send(200, LOGIN_PAGE.encode("utf-8"), "text/html; charset=utf-8")
             with open(os.path.join(WEB_DIR, "index.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
         elif path == "/api/state":
+            if not authed(self.headers):
+                return self._json(401, {"error": "locked: sign in first"})
             with LOCK:
                 payload = state_payload()
             self._json(200, payload)
@@ -153,36 +270,41 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/login":
+            return self._login()
+        if path == "/api/logout":
+            return self._logout()
         fn = POST_ROUTES.get(path)
         if fn is None:
             return self._json(404, {"error": "not found"})
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            length = -1
-        if length < 0 or length > MAX_BODY:
-            return self._json(413, {"error": "body too large or invalid"})
-        try:
-            body = json.loads(self.rfile.read(length) or b"{}")
-        except ValueError:
-            return self._json(400, {"error": "invalid JSON"})
-        if not isinstance(body, dict):
-            return self._json(400, {"error": "JSON object expected"})
+        if not authed(self.headers):
+            return self._json(401, {"error": "locked: sign in first"})
+        body = self._read_body()
+        if body is None:
+            return
         with LOCK:
             code, payload = fn(body)
         self._json(code, payload)
 
 
 def main():
-    global BRAIN
+    global BRAIN, MEM
     ap = argparse.ArgumentParser(description="Pip web server")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--ckpt", default=pc.DEFAULT_CKPT)
     args = ap.parse_args()
 
+    if vault.vault_exists():
+        print("A vault passphrase is set. Enter it to start the server.", flush=True)
+        if not pc.unlock_prompt():
+            print("[vault] too many wrong attempts. Pip stays locked.", flush=True)
+            return
+    MEM = pc.load_memory()
     BRAIN = pc.Brain(args.ckpt)
     httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Pip is running at http://127.0.0.1:{args.port}  (brain: {BRAIN.mode})", flush=True)
+    if vault.vault_exists():
+        print("The browser will ask for the same passphrase.", flush=True)
     if BRAIN.note:
         print(f"note: {BRAIN.note}; using rule-based replies", flush=True)
     print("Press Ctrl-C to stop.", flush=True)

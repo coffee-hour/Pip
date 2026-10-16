@@ -1,1 +1,2 @@
+# Installed by setup.sh with the CPU-only PyTorch index. Keep torch here so pip sees it as satisfied.
 torch>=2.1

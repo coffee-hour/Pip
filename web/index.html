@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pip | Portable Intelligent Partner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --amber: #ff8c00;
+    --amber-dim: rgba(255, 140, 0, 0.35);
+    --text: #e8e8e8;
+    --muted: #7a7a7a;
+    --font: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); }
+  #stars { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; }
+  .app { position: relative; z-index: 1; min-height: 100%; display: flex; flex-direction: column; padding: 16px; gap: 16px; max-width: 1100px; margin: 0 auto; }
+
+  header { text-align: center; padding-top: 8px; }
+  header h1 { margin: 0; font-size: 2.4rem; letter-spacing: 0.4em; color: var(--amber); text-shadow: 0 0 12px rgba(255,140,0,0.6); }
+  header p { margin: 4px 0 0; color: var(--muted); letter-spacing: 0.15em; font-size: 0.8rem; text-transform: uppercase; }
+
+  .grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; flex: 1; min-height: 0; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel { background: rgba(13,13,13,0.85); border: 1px solid var(--amber-dim); border-radius: 6px; padding: 14px; backdrop-filter: blur(2px); }
+  .panel h2 { margin: 0 0 10px; font-size: 0.75rem; color: var(--amber); letter-spacing: 0.2em; text-transform: uppercase; }
+
+  .sprite-box { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  #sprite { margin: 0; font-size: 1.1rem; line-height: 1.25; transition: color 0.4s, text-shadow 0.4s; white-space: pre; }
+  .mood-row { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
+  #moodSquare { width: 18px; height: 18px; border-radius: 3px; background: var(--amber); box-shadow: 0 0 10px currentColor; transition: background 0.4s; }
+  #brain { color: var(--muted); font-size: 0.75rem; }
+
+  .side-list { list-style: none; padding: 0; margin: 0; font-size: 0.8rem; max-height: 180px; overflow-y: auto; }
+  .side-list li { padding: 4px 0; border-bottom: 1px dashed rgba(255,140,0,0.15); color: #cfcfcf; }
+  .muted { color: var(--muted); font-size: 0.75rem; }
+
+  .chat { display: flex; flex-direction: column; min-height: 420px; }
+  #log { flex: 1; overflow-y: auto; font-size: 0.9rem; line-height: 1.5; padding-right: 6px; max-height: 60vh; }
+  .line { margin: 0 0 8px; white-space: pre-wrap; word-wrap: break-word; }
+  .who { font-weight: 700; }
+  .line.user .who { color: #ffffff; }
+  .line.pip .who { color: var(--amber); }
+  .line.pip { color: #9fe8ff; }
+  .line.web { color: var(--muted); font-size: 0.8rem; border-left: 2px solid var(--amber-dim); padding-left: 8px; }
+  .line.warn .who { color: #ffd166; }
+  .line.err { color: #ff6b6b; }
+  .line.sys { color: var(--muted); }
+
+  form { display: flex; gap: 8px; margin-top: 10px; }
+  #input { flex: 1; background: #000; color: var(--text); border: 1px solid var(--amber-dim); border-radius: 4px; padding: 10px; font-family: var(--font); font-size: 0.95rem; }
+  #input:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 8px rgba(255,140,0,0.4); }
+  button { font-family: var(--font); cursor: pointer; background: transparent; color: var(--amber); border: 1px solid var(--amber); border-radius: 4px; padding: 8px 14px; font-size: 0.85rem; }
+  button:hover:not(:disabled) { background: var(--amber); color: #000; }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  .memory-form { display: flex; gap: 6px; margin-top: 8px; }
+  .memory-form input { flex: 1; min-width: 0; background: #000; color: var(--text); border: 1px solid var(--amber-dim); border-radius: 4px; padding: 6px; font-family: var(--font); font-size: 0.8rem; }
+  .memory-form button { padding: 6px 10px; }
+
+  /* web gate dialog */
+  .gate-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10; }
+  .gate-backdrop[hidden] { display: none; }
+  .gate { background: #050505; border: 1px solid var(--amber); box-shadow: 0 0 24px rgba(255,140,0,0.35); border-radius: 6px; padding: 20px; max-width: 480px; width: calc(100% - 32px); }
+  .gate h3 { margin: 0 0 10px; color: var(--amber); letter-spacing: 0.15em; font-size: 0.85rem; }
+  #gateText { color: #ffd166; font-size: 0.95rem; word-wrap: break-word; }
+  .gate p.small { color: var(--muted); font-size: 0.75rem; margin: 10px 0 14px; }
+  .gate .actions { display: flex; gap: 10px; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<canvas id="stars" aria-hidden="true"></canvas>
+
+<div class="app">
+  <header>
+    <h1>PIP</h1>
+    <p>Portable Intelligent Partner</p>
+  </header>
+
+  <div class="grid">
+    <aside class="panel">
+      <h2>Companion</h2>
+      <div class="sprite-box">
+        <pre id="sprite" aria-label="Pip mood sprite"></pre>
+        <div class="mood-row"><span id="moodSquare"></span><span id="moodLabel">curious</span></div>
+        <div id="brain">Brain: loading...</div>
+      </div>
+      <h2 style="margin-top:18px">Memory</h2>
+      <ul id="facts" class="side-list"></ul>
+      <form id="rememberForm" class="memory-form">
+        <input id="factInput" placeholder="something to remember" maxlength="300">
+        <button type="submit">Save</button>
+      </form>
+      <p class="muted">Saved to memory.json on this machine. Anyone with the drive can read it.</p>
+    </aside>
+
+    <section class="panel chat">
+      <h2>Transmission</h2>
+      <div id="log" aria-live="polite"></div>
+      <form id="chatForm">
+        <input id="input" autocomplete="off" placeholder="talk to Pip, or /web &lt;query&gt;, /remember &lt;fact&gt;, /help">
+        <button id="send" type="submit">Send</button>
+      </form>
+    </section>
+  </div>
+</div>
+
+<div id="gate" class="gate-backdrop" hidden>
+  <div class="gate" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+    <h3 id="gateTitle">WEB GATE</h3>
+    <div id="gateText"></div>
+    <p class="small">Nothing leaves this machine unless you press Y. Y also works as the key Y, N or Esc as the key N.</p>
+    <div class="actions">
+      <button id="gateNo" type="button">N</button>
+      <button id="gateYes" type="button">Y</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ---------- starfield: black background with twinkling white specks ----------
+  const canvas = document.getElementById('stars');
+  const ctx = canvas.getContext('2d');
+  let stars = [];
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const count = Math.floor((canvas.width * canvas.height) / 5000);
+    stars = Array.from({ length: count }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      r: Math.random() * 1.1 + 0.2,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.01 + Math.random() * 0.03,
+    }));
+  }
+  function drawStars() {
+    ctx.fillStyle = '#0d0d0d';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ffffff';
+    for (const s of stars) {
+      s.phase += s.speed;
+      ctx.globalAlpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(s.phase));
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    requestAnimationFrame(drawStars);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(drawStars);
+
+  // ---------- mood sprites ----------
+  const MOODS = {
+    curious:     { color: '#ff8c00', eyes: ['o', 'o'], mouth: '  ?   ', label: 'curious' },
+    focused:     { color: '#4fc3f7', eyes: ['-', '-'], mouth: '  _   ', label: 'focused' },
+    chill:       { color: '#7cfc9a', eyes: ['^', '^'], mouth: '  u   ', label: 'chill' },
+    cranky:      { color: '#ff4d4d', eyes: ['>', '<'], mouth: '  n   ', label: 'cranky' },
+    overwhelmed: { color: '#e879f9', eyes: ['@', '@'], mouth: ' ~~~~ ', label: 'overwhelmed' },
+  };
+  const spriteEl = document.getElementById('sprite');
+  const squareEl = document.getElementById('moodSquare');
+  const moodLabel = document.getElementById('moodLabel');
+  function drawSprite(mood) {
+    const m = MOODS[mood] || MOODS.curious;
+    const rows = [
+      ' .----. ',
+      `| ${m.eyes[0]}  ${m.eyes[1]} |`,
+      `|${m.mouth}|`,
+      ` '----' `,
+    ];
+    spriteEl.textContent = rows.join('\n');
+    spriteEl.style.color = m.color;
+    spriteEl.style.textShadow = `0 0 8px ${m.color}`;
+    squareEl.style.background = m.color;
+    squareEl.style.color = m.color;
+    moodLabel.textContent = m.label;
+  }
+
+  // ---------- DOM refs ----------
+  const logEl = document.getElementById('log');
+  const form = document.getElementById('chatForm');
+  const input = document.getElementById('input');
+  const sendBtn = document.getElementById('send');
+  const brainEl = document.getElementById('brain');
+  const factsEl = document.getElementById('facts');
+  const rememberForm = document.getElementById('rememberForm');
+  const factInput = document.getElementById('factInput');
+  const gate = document.getElementById('gate');
+  const gateText = document.getElementById('gateText');
+  const gateYes = document.getElementById('gateYes');
+  const gateNo = document.getElementById('gateNo');
+
+  const HELP = [
+    'Commands:',
+    '  /web <query>      ask Pip to search the web (you approve first)',
+    '  /remember <fact>  save a fact to memory.json',
+    '  /clear            clear chat history (facts are kept)',
+    '  /help             show this list',
+  ].join('\n');
+
+  // ---------- helpers (textContent only, never innerHTML, so nothing is interpreted as markup) ----------
+  function addLine(who, text, cls) {
+    const d = document.createElement('div');
+    d.className = 'line ' + (cls || '');
+    const w = document.createElement('span');
+    w.className = 'who';
+    w.textContent = who + ' ';
+    const t = document.createElement('span');
+    t.textContent = text;
+    d.append(w, t);
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function renderFacts(facts) {
+    factsEl.textContent = '';
+    if (!facts.length) {
+      const li = document.createElement('li');
+      li.textContent = 'No facts saved yet.';
+      factsEl.appendChild(li);
+      return;
+    }
+    for (const f of facts) {
+      const li = document.createElement('li');
+      li.textContent = f;
+      factsEl.appendChild(li);
+    }
+  }
+
+  async function post(path, body) {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, data };
+  }
+
+  function setBusy(busy) {
+    input.disabled = busy;
+    sendBtn.disabled = busy;
+    if (!busy) input.focus();
+  }
+
+  // ---------- web gate: nothing is sent to the server until you press Y ----------
+  function askGate(query) {
+    return new Promise((resolve) => {
+      gateText.textContent = `[WEB GATE] Pip requests web access: "${query}" [Y/N]`;
+      gate.hidden = false;
+      const finish = (answer) => {
+        gate.hidden = true;
+        gateYes.onclick = null;
+        gateNo.onclick = null;
+        document.removeEventListener('keydown', onKey);
+        resolve(answer);
+      };
+      const onKey = (e) => {
+        const k = e.key.toLowerCase();
+        if (k === 'y') finish(true);
+        else if (k === 'n' || k === 'escape') finish(false);
+      };
+      gateYes.onclick = () => finish(true);
+      gateNo.onclick = () => finish(false);
+      document.addEventListener('keydown', onKey);
+      gateYes.focus();
+    });
+  }
+
+  async function webRequest(query) {
+    const approved = await askGate(query);
+    if (!approved) {
+      addLine('gate:', 'Denied. Request dropped. No network connection was made.', 'warn');
+      await post('/api/web', { query, approved: false }).catch(() => {});
+      return;
+    }
+    addLine('gate:', 'Approved. Searching...', 'warn');
+    setBusy(true);
+    try {
+      const { ok, data } = await post('/api/web', { query, approved: true });
+      if (!ok) { addLine('!', data.error || 'search failed', 'err'); return; }
+      addLine('web:', data.excerpt, 'web');
+    } catch (e) {
+      addLine('!', 'Cannot reach the Pip server. Is server.py running?', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ---------- chat ----------
+  async function sendChat(text) {
+    addLine('you>', text, 'user');
+    setBusy(true);
+    try {
+      const { ok, data } = await post('/api/chat', { text });
+      if (!ok) { addLine('!', data.error || 'something went wrong', 'err'); return; }
+      addLine('pip:', data.reply, 'pip');
+      drawSprite(data.mood);
+      brainEl.textContent = 'Brain: ' + data.brain;
+    } catch (e) {
+      addLine('!', 'Cannot reach the Pip server. Is server.py running?', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+
+    if (text.startsWith('/web ')) {
+      const query = text.slice(5).trim();
+      if (query) await webRequest(query);
+      return;
+    }
+    if (text.startsWith('/remember ')) {
+      const fact = text.slice(10).trim();
+      if (!fact) return;
+      const { ok, data } = await post('/api/remember', { fact });
+      if (ok) { addLine('sys:', data.message, 'sys'); renderFacts(data.facts); }
+      else addLine('!', data.error || 'could not save', 'err');
+      return;
+    }
+    if (text === '/clear') {
+      await post('/api/clear', {});
+      logEl.textContent = '';
+      addLine('sys:', 'Chat cleared. Facts kept.', 'sys');
+      return;
+    }
+    if (text === '/help') { addLine('sys:', HELP, 'sys'); return; }
+    await sendChat(text);
+  });
+
+  rememberForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fact = factInput.value.trim();
+    if (!fact) return;
+    factInput.value = '';
+    const { ok, data } = await post('/api/remember', { fact });
+    if (ok) { addLine('sys:', data.message, 'sys'); renderFacts(data.facts); }
+    else addLine('!', data.error || 'could not save', 'err');
+  });
+
+  // ---------- startup ----------
+  async function boot() {
+    try {
+      const r = await fetch('/api/state');
+      const s = await r.json();
+      drawSprite(s.mood);
+      brainEl.textContent = 'Brain: ' + s.brain;
+      renderFacts(s.facts);
+      for (const h of s.history) {
+        if (h.role === 'user') addLine('you>', h.text, 'user');
+        else if (h.role === 'pip') addLine('pip:', h.text, 'pip');
+      }
+      addLine('sys:', 'Pip is online. Type /help for commands. Pip stays offline unless you approve a web request.', 'sys');
+    } catch (e) {
+      drawSprite('curious');
+      brainEl.textContent = 'Brain: offline';
+      addLine('!', 'Cannot reach the Pip server. Start it with: python server.py', 'err');
+    }
+    input.focus();
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

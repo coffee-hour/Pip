@@ -7,8 +7,9 @@ Binds to 127.0.0.1 only, so nothing on your network can reach it. Open the page 
 browser (in Codespaces: Ports tab, port 8000, Open in Browser).
 
 API:
-  GET  /api/state                 mood, brain mode, facts, recent history
-  POST /api/chat     {text}       reply from the trained model (or rules if no checkpoint)
+  GET  /api/state                 mood {name, hex, sprite}, brain mode, facts, recent history
+  POST /api/chat     {text}       reply {reply, thought, mood, brain}. Tags from the model
+                                  (MOOD, SPRITE, THOUGHT) are parsed out and never shown as text
   POST /api/remember {fact}       save a fact to memory.json
   POST /api/clear    {}           clear chat history (facts are kept)
   POST /api/web      {query, approved}
@@ -37,7 +38,7 @@ BRAIN = None
 
 def state_payload():
     return {
-        "mood": MEM.get("mood", "curious"),
+        "mood": pc.mood_state(MEM),
         "brain": BRAIN.mode,
         "facts": MEM["facts"],
         "history": MEM["history"][-50:],
@@ -55,19 +56,27 @@ def api_chat(body):
     text = text.strip()[:MAX_TEXT]
     mood = pc.classify_mood(text)
     if mood:
-        MEM["mood"] = mood
+        pc.set_mood(MEM, mood)
     m = re.match(r"\s*my name is ([A-Za-z][\w-]{0,30})", text, re.I)
     if m:
         pc.add_fact(MEM, f"User's name is {m.group(1)}")
     pc.log(MEM, "user", text)
     try:
-        reply = BRAIN.reply(text, MEM)
+        raw = BRAIN.reply(text, MEM)
     except Exception as exc:
         save()
         return 500, {"error": f"could not generate a reply: {type(exc).__name__}"}
+    parsed = pc.parse_reply(raw)
+    pc.apply_reply(MEM, parsed)
+    reply = parsed["text"][:MAX_TEXT] or "..."
     pc.log(MEM, "pip", reply)
     save()
-    return 200, {"reply": reply, "mood": MEM["mood"], "brain": BRAIN.mode}
+    return 200, {
+        "reply": reply,
+        "thought": parsed["thought"],
+        "mood": pc.mood_state(MEM),
+        "brain": BRAIN.mode,
+    }
 
 
 def api_remember(body):

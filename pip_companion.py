@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Pip companion: a space-themed terminal interface for Pip (Portable Intelligent Partner).
+"""Pip companion: terminal interface and shared logic for Pip (Portable Intelligent Partner).
 
 Standard library only. No installs, no servers, no browser automation.
 
-Features:
-- Black background with a starfield header.
-- Mood sprite that shifts with the tone of the conversation (curious, focused, chill, cranky, overwhelmed).
-- Air-gapped web gate: Pip never touches the network unless you type y at the [WEB GATE] prompt.
-- Local memory ledger in memory.json (facts you ask Pip to remember, and recent chat history).
-- Uses the trained checkpoint (checkpoints/pip.pt) when torch and the checkpoint are present.
-  Otherwise it falls back to rule-based replies, so it works before training.
+Reply protocol. Pip may put these tags in a reply. Text outside the tags is what the user sees.
+  MOOD[name, #hex]   any mood name and any hex color, e.g. MOOD[sleepy, #6b8cff]
+  SPRITE[ ... ]      12 rows of 12 characters. '#' is a filled pixel, '.' is empty.
+  THOUGHT[ ... ]     a short private note. Shown in gray, kept out of the reply text.
+Every tag is optional. A missing or invalid tag keeps the previous mood or sprite.
 
 Usage: python pip_companion.py [--ckpt checkpoints/pip.pt] [--no-color]
 Commands: /web <query>, /remember <fact>, /facts, /clear, /help, /quit
@@ -30,32 +28,43 @@ MEMORY_PATH = os.path.join(ROOT, "memory.json")
 DEFAULT_CKPT = os.path.join(ROOT, "checkpoints", "pip.pt")
 HISTORY_LIMIT = 200
 
+SPRITE_SIZE = 12
+FILL = "#"
+
+# Presets are defaults only. Pip can name any mood and give it any hex color in a reply.
+PRESET_MOODS = {
+    "curious": "#ff8c00",
+    "focused": "#4fc3f7",
+    "chill": "#7cfc9a",
+    "cranky": "#ff4d4d",
+    "overwhelmed": "#e879f9",
+}
+DEFAULT_MOOD = "curious"
+
+DEFAULT_SPRITE = [
+    "............",
+    "...######...",
+    "..#......#..",
+    "..#.#..#.#..",
+    "..#......#..",
+    "..#......#..",
+    "..#.####.#..",
+    "..#......#..",
+    "...######...",
+    "............",
+    "...#....#...",
+    "..##....##..",
+]
+
 USE_COLOR = True
 RESET = "\033[0m"
 BG = "\033[40m"
-CODES = {
-    "white": "\033[97m", "gray": "\033[90m", "cyan": "\033[96m", "blue": "\033[94m",
-    "green": "\033[92m", "red": "\033[91m", "magenta": "\033[95m", "yellow": "\033[93m",
-}
+CODES = {"white": "\033[97m", "gray": "\033[90m", "cyan": "\033[96m", "yellow": "\033[93m", "red": "\033[91m"}
 
-MOODS = {
-    # mood: (color, status label)
-    "curious": ("cyan", "curious"),
-    "focused": ("blue", "focused"),
-    "chill": ("green", "chill"),
-    "cranky": ("red", "cranky"),
-    "overwhelmed": ("magenta", "overwhelmed"),
-}
-
-# Each sprite is 8 columns wide and 4 rows tall.
-EYES = {
-    "curious": ("o", "o"), "focused": ("-", "-"), "chill": ("^", "^"),
-    "cranky": (">", "<"), "overwhelmed": ("@", "@"),
-}
-MOUTH = {
-    "curious": "  ?   ", "focused": "  _   ", "chill": "  u   ",
-    "cranky": "  n   ", "overwhelmed": " ~~~~ ",
-}
+HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+TAG_MOOD = re.compile(r"MOOD\[([^\]]*)\]", re.I)
+TAG_SPRITE = re.compile(r"SPRITE\[([^\]]*)\]", re.I)
+TAG_THOUGHT = re.compile(r"THOUGHT\[([^\]]*)\]", re.I)
 
 MOOD_KEYWORDS = [
     ("overwhelmed", r"\b(too much|overwhelm\w*|stress\w*|swamped|tired|exhaust\w*)\b"),
@@ -66,10 +75,17 @@ MOOD_KEYWORDS = [
 ]
 
 
+def fg(color):
+    if color.startswith("#") and len(color) == 7:
+        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+        return f"\033[38;2;{r};{g};{b}m"
+    return CODES.get(color, "")
+
+
 def paint(color, text):
     if not USE_COLOR:
         return text
-    return f"{BG}{CODES.get(color, '')}{text}{RESET}{BG}"
+    return f"{BG}{fg(color)}{text}{RESET}{BG}"
 
 
 def clear_screen():
@@ -81,7 +97,8 @@ def clear_screen():
 # ---------- memory ledger ----------
 
 def load_memory():
-    default = {"facts": [], "history": [], "mood": "curious"}
+    default = {"facts": [], "history": [], "mood": DEFAULT_MOOD,
+               "mood_hex": PRESET_MOODS[DEFAULT_MOOD], "sprite": list(DEFAULT_SPRITE)}
     if not os.path.exists(MEMORY_PATH):
         return default
     try:
@@ -114,7 +131,7 @@ def add_fact(memory, fact):
     return False
 
 
-# ---------- mood ----------
+# ---------- mood and reply protocol ----------
 
 def classify_mood(text):
     lowered = text.lower()
@@ -124,23 +141,84 @@ def classify_mood(text):
     return None
 
 
-def sprite_lines(mood):
-    left, right = EYES[mood]
-    color = MOODS[mood][0]
-    rows = [
-        " .----. ",
-        f"| {left}  {right} |",
-        f"|{MOUTH[mood]}|",
-        " '----' ",
-    ]
-    return [paint(color, row) for row in rows]
+def clean_name(raw):
+    name = re.sub(r"[^A-Za-z0-9 _-]", "", raw).strip()
+    return name[:24] or None
 
 
-def mood_square(mood):
-    return paint(MOODS[mood][0], "\u2588\u2588") + " " + MOODS[mood][1]
+def clean_hex(raw):
+    raw = raw.strip()
+    if not HEX_RE.match(raw):
+        return None
+    if len(raw) == 4:
+        raw = "#" + "".join(c * 2 for c in raw[1:])
+    return raw.lower()
 
 
-# ---------- starfield ----------
+def parse_sprite(body):
+    rows = [line.strip() for line in body.splitlines() if line.strip()]
+    if len(rows) != SPRITE_SIZE:
+        return None
+    out = []
+    for row in rows:
+        bits = "".join(FILL if c == FILL else "." for c in row[:SPRITE_SIZE])
+        out.append(bits.ljust(SPRITE_SIZE, "."))
+    return out
+
+
+def parse_reply(raw):
+    raw = raw or ""
+    mood = None
+    m = TAG_MOOD.search(raw)
+    if m:
+        parts = [p.strip() for p in m.group(1).split(",")]
+        name = clean_name(parts[0]) if parts else None
+        if name:
+            hx = clean_hex(parts[1]) if len(parts) > 1 else None
+            mood = (name, hx)
+    sprite = None
+    s = TAG_SPRITE.search(raw)
+    if s:
+        sprite = parse_sprite(s.group(1))
+    thought = None
+    t = TAG_THOUGHT.search(raw)
+    if t:
+        thought = " ".join(t.group(1).split())[:300] or None
+    text = TAG_MOOD.sub("", raw)
+    text = TAG_SPRITE.sub("", text)
+    text = TAG_THOUGHT.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return {"text": text, "mood": mood, "sprite": sprite, "thought": thought}
+
+
+def mood_state(memory):
+    name = memory.get("mood", DEFAULT_MOOD)
+    return {
+        "name": name,
+        "hex": memory.get("mood_hex") or PRESET_MOODS.get(name.lower(), PRESET_MOODS[DEFAULT_MOOD]),
+        "sprite": memory.get("sprite") or DEFAULT_SPRITE,
+    }
+
+
+def set_mood(memory, name, hx=None):
+    memory["mood"] = name
+    memory["mood_hex"] = (hx or PRESET_MOODS.get(name.lower())
+                          or memory.get("mood_hex") or PRESET_MOODS[DEFAULT_MOOD])
+
+
+def apply_reply(memory, parsed):
+    if parsed["mood"]:
+        name, hx = parsed["mood"]
+        set_mood(memory, name, hx)
+    if parsed["sprite"]:
+        memory["sprite"] = parsed["sprite"]
+
+
+# ---------- sprite and starfield (terminal) ----------
+
+def sprite_lines(sprite, hex_color):
+    return ["".join(paint(hex_color, "\u2588\u2588") if ch == FILL else "  " for ch in row) for row in sprite]
+
 
 def starfield(width=64, rows=3, seed=None):
     rng = random.Random(seed if seed is not None else int(time.time()))
@@ -161,15 +239,17 @@ def starfield(width=64, rows=3, seed=None):
     return lines
 
 
-def draw_header(mood, mode):
+def draw_header(state, mode):
     print(paint("white", "  PIP  ") + paint("gray", "Portable Intelligent Partner"))
     for line in starfield():
         print(line)
-    sprite = sprite_lines(mood)
-    print(sprite[0] + "   " + paint("white", "Mood: ") + mood_square(mood))
-    print(sprite[1] + "   " + paint("gray", f"Brain: {mode}"))
-    print(sprite[2])
-    print(sprite[3])
+    info = {
+        1: paint("white", "Mood: ") + paint(state["hex"], "\u2588\u2588") + " " + state["name"],
+        2: paint("gray", state["hex"]),
+        3: paint("gray", f"Brain: {mode}"),
+    }
+    for i, row in enumerate(sprite_lines(state["sprite"], state["hex"])):
+        print(row + "   " + info.get(i, ""))
     print(paint("gray", "Type /help for commands. Pip stays offline unless you approve a web request."))
     print()
 
@@ -226,6 +306,7 @@ class Brain:
             self.note = f"fallback: {type(exc).__name__}"
 
     def reply(self, text, memory):
+        """Return the raw reply, which may contain MOOD, SPRITE, and THOUGHT tags."""
         if self.mode == "model":
             from generate import generate
             prompt = text + "\n"
@@ -233,7 +314,8 @@ class Brain:
                            temperature=0.8, top_k=40, device="cpu")
             answer = out[len(prompt):] if out.startswith(prompt) else out
             return answer.strip() or "..."
-        return rules_reply(text, memory)
+        state = mood_state(memory)
+        return f"MOOD[{state['name']}, {state['hex']}]\n" + rules_reply(text, memory)
 
 
 def rules_reply(text, memory):
@@ -243,7 +325,7 @@ def rules_reply(text, memory):
         return f"You told me: {name_facts[0]}."
     if memory["facts"] and re.search(r"\b(remember|recall|what do you know)\b", lowered):
         return "Here is what I remember: " + "; ".join(memory["facts"][-5:])
-    mood = memory.get("mood", "curious")
+    mood = memory.get("mood", DEFAULT_MOOD)
     lines = {
         "curious": "Interesting. Tell me more about that.",
         "focused": "Let's break it into small steps. What is the first one?",
@@ -270,13 +352,16 @@ HELP = (
 def handle_text(text, memory, brain):
     mood = classify_mood(text)
     if mood:
-        memory["mood"] = mood
+        set_mood(memory, mood)
     m = re.match(r"\s*my name is ([A-Za-z][\w-]{0,30})", text, re.I)
     if m:
         add_fact(memory, f"User's name is {m.group(1)}")
     log(memory, "user", text)
-    context = ""
-    reply = brain.reply(text, memory)
+    parsed = parse_reply(brain.reply(text, memory))
+    apply_reply(memory, parsed)
+    reply = parsed["text"] or "..."
+    if parsed["thought"]:
+        print(paint("gray", f"thought: {parsed['thought']}"))
     print(paint("white", "Pip: ") + paint("cyan", reply))
     log(memory, "pip", reply)
     save_memory(memory)
@@ -293,7 +378,7 @@ def main():
     memory = load_memory()
     brain = Brain(args.ckpt)
     clear_screen()
-    draw_header(memory.get("mood", "curious"), brain.mode)
+    draw_header(mood_state(memory), brain.mode)
     if brain.note:
         print(paint("gray", f"(note: {brain.note}; using rule-based replies)"))
 

@@ -7,12 +7,16 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
+  /* Strict black and white. The only colored elements are the mood sprite and the mood indicator,
+     which change color with Pip's mood (the MOODS table in the script). */
   :root {
     --bg: #0d0d0d;
-    --amber: #ff8c00;
-    --amber-dim: rgba(255, 140, 0, 0.35);
-    --text: #e8e8e8;
-    --muted: #7a7a7a;
+    --black: #000000;
+    --white: #ffffff;
+    --text: #e6e6e6;
+    --muted: #8a8a8a;
+    --border: #3a3a3a;
+    --border-strong: #ffffff;
     --font: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -21,54 +25,59 @@
   .app { position: relative; z-index: 1; min-height: 100%; display: flex; flex-direction: column; padding: 16px; gap: 16px; max-width: 1100px; margin: 0 auto; }
 
   header { text-align: center; padding-top: 8px; }
-  header h1 { margin: 0; font-size: 2.4rem; letter-spacing: 0.4em; color: var(--amber); text-shadow: 0 0 12px rgba(255,140,0,0.6); }
+  header h1 { margin: 0; font-size: 2.4rem; letter-spacing: 0.4em; color: var(--white); }
   header p { margin: 4px 0 0; color: var(--muted); letter-spacing: 0.15em; font-size: 0.8rem; text-transform: uppercase; }
 
   .grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; flex: 1; min-height: 0; }
   @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
 
-  .panel { background: rgba(13,13,13,0.85); border: 1px solid var(--amber-dim); border-radius: 6px; padding: 14px; backdrop-filter: blur(2px); }
-  .panel h2 { margin: 0 0 10px; font-size: 0.75rem; color: var(--amber); letter-spacing: 0.2em; text-transform: uppercase; }
+  .panel { background: rgba(0,0,0,0.85); border: 1px solid var(--border); border-radius: 6px; padding: 14px; }
+  .panel h2 { margin: 0 0 10px; font-size: 0.75rem; color: var(--white); letter-spacing: 0.2em; text-transform: uppercase; font-weight: 700; }
 
   .sprite-box { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  /* sprite color is set from the mood (the only colored text on the page) */
   #sprite { margin: 0; font-size: 1.1rem; line-height: 1.25; transition: color 0.4s, text-shadow 0.4s; white-space: pre; }
-  .mood-row { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
-  #moodSquare { width: 18px; height: 18px; border-radius: 3px; background: var(--amber); box-shadow: 0 0 10px currentColor; transition: background 0.4s; }
+  .mood-row { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text); }
+  /* mood indicator square: the only other colored element, follows the mood */
+  #moodSquare { width: 18px; height: 18px; border-radius: 3px; background: var(--white); transition: background 0.4s; }
   #brain { color: var(--muted); font-size: 0.75rem; }
 
   .side-list { list-style: none; padding: 0; margin: 0; font-size: 0.8rem; max-height: 180px; overflow-y: auto; }
-  .side-list li { padding: 4px 0; border-bottom: 1px dashed rgba(255,140,0,0.15); color: #cfcfcf; }
+  .side-list li { padding: 4px 0; border-bottom: 1px dashed var(--border); color: var(--text); }
   .muted { color: var(--muted); font-size: 0.75rem; }
 
   .chat { display: flex; flex-direction: column; min-height: 420px; }
   #log { flex: 1; overflow-y: auto; font-size: 0.9rem; line-height: 1.5; padding-right: 6px; max-height: 60vh; }
-  .line { margin: 0 0 8px; white-space: pre-wrap; word-wrap: break-word; }
-  .who { font-weight: 700; }
-  .line.user .who { color: #ffffff; }
-  .line.pip .who { color: var(--amber); }
-  .line.pip { color: #9fe8ff; }
-  .line.web { color: var(--muted); font-size: 0.8rem; border-left: 2px solid var(--amber-dim); padding-left: 8px; }
-  .line.warn .who { color: #ffd166; }
-  .line.err { color: #ff6b6b; }
+  .line { margin: 0 0 8px; white-space: pre-wrap; word-wrap: break-word; color: var(--text); }
+  .who { font-weight: 700; color: var(--white); }
+  .line.user .who { color: var(--white); }
+  .line.pip .who { color: var(--white); }
+  .line.pip { color: var(--text); }
+  .line.web { color: var(--muted); font-size: 0.8rem; border-left: 2px solid var(--border); padding-left: 8px; }
+  .line.warn { color: var(--text); }
+  .line.warn .who { color: var(--white); }
+  .line.err { color: var(--white); text-decoration: underline; }
   .line.sys { color: var(--muted); }
 
   form { display: flex; gap: 8px; margin-top: 10px; }
-  #input { flex: 1; background: #000; color: var(--text); border: 1px solid var(--amber-dim); border-radius: 4px; padding: 10px; font-family: var(--font); font-size: 0.95rem; }
-  #input:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 8px rgba(255,140,0,0.4); }
-  button { font-family: var(--font); cursor: pointer; background: transparent; color: var(--amber); border: 1px solid var(--amber); border-radius: 4px; padding: 8px 14px; font-size: 0.85rem; }
-  button:hover:not(:disabled) { background: var(--amber); color: #000; }
+  #input { flex: 1; background: var(--black); color: var(--white); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-family: var(--font); font-size: 0.95rem; }
+  #input:focus { outline: none; border-color: var(--white); }
+  button { font-family: var(--font); cursor: pointer; background: var(--black); color: var(--white); border: 1px solid var(--white); border-radius: 4px; padding: 8px 14px; font-size: 0.85rem; }
+  button:hover:not(:disabled) { background: var(--white); color: var(--black); }
+  button:focus-visible { outline: 2px solid var(--white); outline-offset: 2px; }
   button:disabled { opacity: 0.4; cursor: default; }
 
   .memory-form { display: flex; gap: 6px; margin-top: 8px; }
-  .memory-form input { flex: 1; min-width: 0; background: #000; color: var(--text); border: 1px solid var(--amber-dim); border-radius: 4px; padding: 6px; font-family: var(--font); font-size: 0.8rem; }
+  .memory-form input { flex: 1; min-width: 0; background: var(--black); color: var(--white); border: 1px solid var(--border); border-radius: 4px; padding: 6px; font-family: var(--font); font-size: 0.8rem; }
+  .memory-form input:focus { outline: none; border-color: var(--white); }
   .memory-form button { padding: 6px 10px; }
 
   /* web gate dialog */
-  .gate-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10; }
+  .gate-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 10; }
   .gate-backdrop[hidden] { display: none; }
-  .gate { background: #050505; border: 1px solid var(--amber); box-shadow: 0 0 24px rgba(255,140,0,0.35); border-radius: 6px; padding: 20px; max-width: 480px; width: calc(100% - 32px); }
-  .gate h3 { margin: 0 0 10px; color: var(--amber); letter-spacing: 0.15em; font-size: 0.85rem; }
-  #gateText { color: #ffd166; font-size: 0.95rem; word-wrap: break-word; }
+  .gate { background: var(--black); border: 1px solid var(--white); border-radius: 6px; padding: 20px; max-width: 480px; width: calc(100% - 32px); }
+  .gate h3 { margin: 0 0 10px; color: var(--white); letter-spacing: 0.15em; font-size: 0.85rem; }
+  #gateText { color: var(--white); font-size: 0.95rem; word-wrap: break-word; }
   .gate p.small { color: var(--muted); font-size: 0.75rem; margin: 10px 0 14px; }
   .gate .actions { display: flex; gap: 10px; justify-content: flex-end; }
 </style>
@@ -114,7 +123,7 @@
   <div class="gate" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
     <h3 id="gateTitle">WEB GATE</h3>
     <div id="gateText"></div>
-    <p class="small">Nothing leaves this machine unless you press Y. Y also works as the key Y, N or Esc as the key N.</p>
+    <p class="small">Nothing leaves this machine unless you press Y. Press Y to approve, or N or Esc to decline.</p>
     <div class="actions">
       <button id="gateNo" type="button">N</button>
       <button id="gateYes" type="button">Y</button>
@@ -158,7 +167,7 @@
   resize();
   requestAnimationFrame(drawStars);
 
-  // ---------- mood sprites ----------
+  // ---------- mood sprites (colors here are the only non-monochrome values on the page) ----------
   const MOODS = {
     curious:     { color: '#ff8c00', eyes: ['o', 'o'], mouth: '  ?   ', label: 'curious' },
     focused:     { color: '#4fc3f7', eyes: ['-', '-'], mouth: '  _   ', label: 'focused' },
@@ -181,7 +190,6 @@
     spriteEl.style.color = m.color;
     spriteEl.style.textShadow = `0 0 8px ${m.color}`;
     squareEl.style.background = m.color;
-    squareEl.style.color = m.color;
     moodLabel.textContent = m.label;
   }
 

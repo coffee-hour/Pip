@@ -20,10 +20,14 @@ OBSERVATION[result] to the prompt, and lets Pip continue. At most 2 tool rounds 
 Context: before each turn, the most relevant saved facts are placed at the head of the prompt as
 FACTS: [...], within a fixed character budget.
 
+Vault: an optional master passphrase (vault.py) is asked for before memory loads. /lock locks the
+session and asks again. /password sets, changes, or removes it. The lock does not encrypt files on disk.
+
 Usage: python pip_companion.py [--ckpt checkpoints/pip.pt] [--no-color]
-Commands: /web <query>, /remember <fact>, /facts, /files, /clear, /help, /quit
+Commands: /web <query>, /remember <fact>, /facts, /files, /lock, /password, /clear, /help, /quit
 """
 import argparse
+import getpass
 import json
 import os
 import random
@@ -33,6 +37,8 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
+
+import vault
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MEMORY_PATH = os.path.join(ROOT, "memory.json")
@@ -488,6 +494,90 @@ def web_gate(query, memory, input_fn=input):
     return excerpt
 
 
+# ---------- vault (passphrase lock) ----------
+
+def unlock_prompt(max_tries=3):
+    """Ask for the master passphrase up to max_tries times. Returns True only on a match."""
+    for attempt in range(1, max_tries + 1):
+        try:
+            phrase = getpass.getpass(paint("yellow", "passphrase> "))
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if vault.check_passphrase(phrase):
+            print(paint("gray", "[vault] unlocked."))
+            return True
+        print(paint("red", f"[vault] wrong passphrase ({attempt}/{max_tries})."))
+    return False
+
+
+def ask_new_passphrase():
+    """Ask for a new passphrase twice. Empty input cancels and returns None."""
+    while True:
+        try:
+            first = getpass.getpass("new passphrase (at least " + str(vault.MIN_LEN) +
+                                    " characters, empty to cancel): ")
+            if not first:
+                return None
+            if len(first) < vault.MIN_LEN:
+                print(paint("red", "[vault] too short."))
+                continue
+            second = getpass.getpass("repeat new passphrase: ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if first != second:
+            print(paint("red", "[vault] the two entries do not match. Try again."))
+            continue
+        return first
+
+
+def first_run_setup():
+    """Offer an optional passphrase on first start. Skipping leaves the companion unlocked."""
+    print(paint("gray", "No vault passphrase is set. You can set one now or later with /password."))
+    print(paint("gray", "A passphrase only gates this companion. It does not encrypt memory.json or pip_files/."))
+    try:
+        answer = input("Set a passphrase now? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if answer == "y":
+        new = ask_new_passphrase()
+        if new:
+            vault.set_passphrase(new)
+            print(paint("gray", "[vault] passphrase saved to vault.json."))
+
+
+def change_passphrase(arg):
+    """/password sets or changes the passphrase. /password remove deletes it. Both need the current one."""
+    if vault.vault_exists() and not unlock_prompt():
+        print(paint("red", "[vault] passphrase not changed."))
+        return
+    if arg == "remove":
+        if not vault.vault_exists():
+            print(paint("gray", "No passphrase is set."))
+            return
+        vault.remove_passphrase()
+        print(paint("gray", "[vault] passphrase removed. The companion no longer asks for one."))
+        return
+    new = ask_new_passphrase()
+    if new is None:
+        print(paint("gray", "[vault] cancelled."))
+        return
+    vault.set_passphrase(new)
+    print(paint("gray", "[vault] passphrase saved."))
+
+
+def lock_session():
+    """Hide the session and require the passphrase again. Returns False if the user cannot unlock."""
+    if not vault.vault_exists():
+        print(paint("gray", "No passphrase is set, so there is nothing to lock. Use /password to set one."))
+        return True
+    clear_screen()
+    print(paint("yellow", "[vault] session locked."))
+    return unlock_prompt()
+
+
 # ---------- brain: checkpoint if available, rules otherwise ----------
 
 class Brain:
@@ -548,6 +638,8 @@ HELP = (
     "  /remember <fact> save a fact to memory.json\n"
     "  /facts           list saved facts and profile\n"
     "  /files           list files in pip_files/\n"
+    "  /lock            lock the session and ask for the passphrase again\n"
+    "  /password        set or change the passphrase (/password remove deletes it)\n"
     "  /clear           clear chat history (facts are kept)\n"
     "  /help            show this list\n"
     "  /quit            exit"
@@ -572,6 +664,14 @@ def main():
     args = ap.parse_args()
     USE_COLOR = not args.no_color
 
+    # The vault gate runs before any memory or model is loaded.
+    if vault.vault_exists():
+        if not unlock_prompt():
+            print(paint("red", "[vault] too many wrong attempts. Pip stays locked."))
+            return
+    else:
+        first_run_setup()
+
     memory = load_memory()
     brain = Brain(args.ckpt)
     clear_screen()
@@ -591,6 +691,17 @@ def main():
             break
         if text == "/help":
             print(paint("gray", HELP))
+            continue
+        if text == "/lock":
+            if not lock_session():
+                print(paint("red", "[vault] too many wrong attempts. Pip stays locked."))
+                return
+            clear_screen()
+            draw_header(mood_state(memory), brain.mode)
+            continue
+        if text == "/password" or text.startswith("/password "):
+            arg = text[len("/password"):].strip().lower()
+            change_passphrase(arg)
             continue
         if text == "/facts":
             print(paint("gray", "\n".join(memory["facts"]) or "No facts saved yet."))

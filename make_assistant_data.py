@@ -2,9 +2,9 @@
 
 Each example is a User turn followed by a Pip turn in the reply protocol:
 MOOD[name, #hex] THOUGHT[...], then SPRITE[ 12 rows ], then the reply text.
-Some examples also use tool tags. The tool line is followed by an OBSERVATION[...] line that
-the runtime writes, then a second 'Pip:' line with the grounded reply. The runtime, not the
-model, writes OBSERVATION, so a trained model learns to stop after a tool tag.
+Some examples also use tool tags. SEARCH, READ_FILE and WRITE_FILE are followed by an OBSERVATION[...]
+line that the runtime writes, then a second 'Pip:' line with the grounded reply. REMEMBER does not
+stop the turn, so its reply follows directly. The runtime, not the model, writes OBSERVATION.
 Deterministic (fixed seed). Standard library only.
 
 Usage: python make_assistant_data.py
@@ -103,7 +103,7 @@ SEEDS = [
 ]
 
 # Tool examples: (prompt, mood, thought, tool_line, observation, reply).
-# tool_line is the tag Pip emits. observation is what the runtime returns. reply is grounded in it.
+# observation None means the tag does not stop the turn (REMEMBER), so the reply follows directly.
 TOOL_SEEDS = [
     ('I work nights at the hospital', 'chill', 'They shared a fact about their job. Save it.',
      'REMEMBER[works nights at the hospital]', None,
@@ -130,9 +130,10 @@ TOOL_SEEDS = [
      'READ_FILE[notes.txt]',
      'notes.txt: buy oat milk; call the dentist on Monday.',
      'Your notes say to buy oat milk and call the dentist on Monday.'),
-    ('save a shopping list for me', 'focused', 'They want a file written. Ask before writing.',
-     'WRITE_FILE[shopping.txt, oat milk, eggs, bread]', None,
-     'I wrote the shopping list to shopping.txt in pip_files. You approved the write before it happened.'),
+    ('save a shopping list for me', 'focused', 'They want a file written. The write needs their approval first.',
+     'WRITE_FILE[shopping.txt, oat milk, eggs, bread]',
+     'wrote shopping.txt (25 chars)',
+     'I saved your shopping list to shopping.txt in pip_files.'),
 ]
 
 

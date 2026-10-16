@@ -4,9 +4,10 @@ Usage: python train.py --data input.txt --out checkpoints/pip.pt --steps 5000
 A fresh run trains the BPE tokenizer on the data. Resuming reuses the tokenizer stored in the
 checkpoint, so the token IDs stay consistent.
 
-Progress: a live line prints every --log_every steps (step, loss, lr, steps/sec, ETA).
-A full validation pass prints every --eval_every steps. All output is flushed immediately,
-so it shows up live in the terminal and in `tail -f train.log` even without `python -u`.
+Progress: the first 10 steps print one line each, so you see numbers right away. After that a
+line prints every --log_every steps (step, loss, lr, steps/sec, ETA). A validation pass runs every
+--eval_every steps, using --eval_iters batches per split. It does NOT run at step 0 unless you
+pass --eval_at_start. All output is flushed immediately.
 """
 import argparse
 import math
@@ -46,7 +47,7 @@ def get_batch(data, block_size, batch_size, device):
 
 
 @torch.no_grad()
-def estimate_loss(model, splits, cfg, batch_size, device, iters=20):
+def estimate_loss(model, splits, cfg, batch_size, device, iters):
     model.eval()
     out = {}
     for name, data in splits.items():
@@ -105,8 +106,10 @@ def main():
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--warmup", type=int, default=200)
-    p.add_argument("--log_every", type=int, default=10, help="print a live progress line every N steps")
-    p.add_argument("--eval_every", type=int, default=250, help="full train/val evaluation every N steps")
+    p.add_argument("--log_every", type=int, default=10, help="print a progress line every N steps (after the first 10)")
+    p.add_argument("--eval_every", type=int, default=250, help="validation pass every N steps")
+    p.add_argument("--eval_iters", type=int, default=5, help="batches per split in each validation pass")
+    p.add_argument("--eval_at_start", action="store_true", help="also run validation before step 0")
     p.add_argument("--save_every", type=int, default=1000)
     p.add_argument("--vocab_size", type=int, default=2048)
     p.add_argument("--n_layer", type=int, default=6)
@@ -131,7 +134,7 @@ def main():
         start_step = ckpt["step"]
         log(f"resumed from {args.resume} at step {start_step}")
     else:
-        log("training BPE tokenizer (this can take a few minutes on a large file)...")
+        log("training BPE tokenizer (this can take a few minutes on a large file, no progress shown)...")
         t_tok = time.time()
         tokenizer = BPETokenizer.train(text, args.vocab_size)
         log(f"tokenizer ready in {fmt_time(time.time() - t_tok)}")
@@ -154,15 +157,17 @@ def main():
     t0 = time.time()
     run_loss = None
     last_log_time, last_log_step = t0, start_step
+
+    if args.eval_at_start:
+        log(f"running validation before step 0 ({args.eval_iters} batches per split)...")
+        losses = estimate_loss(model, splits, cfg, args.batch_size, device, args.eval_iters)
+        log(f"[eval] step {start_step}: train {losses['train']:.4f} val {losses['val']:.4f}")
+
+    log("starting training loop, first progress line in a few seconds...")
     for step in range(start_step, args.steps):
         lr = lr_at(step, args)
         for g in optimizer.param_groups:
             g["lr"] = lr
-
-        if step % args.eval_every == 0 or step == args.steps - 1:
-            losses = estimate_loss(model, splits, cfg, args.batch_size, device)
-            log(f"[eval] step {step}/{args.steps}: train {losses['train']:.4f} val {losses['val']:.4f} "
-                f"lr {lr:.2e} elapsed {fmt_time(time.time() - t0)}")
 
         x, y = get_batch(splits["train"], cfg.block_size, args.batch_size, device)
         _, loss = model(x, y)
@@ -175,7 +180,8 @@ def main():
         run_loss = lv if run_loss is None else 0.9 * run_loss + 0.1 * lv
 
         done = step + 1
-        if done % args.log_every == 0 or done == args.steps:
+        show_now = done <= 10 or done % args.log_every == 0 or done == args.steps
+        if show_now:
             now = time.time()
             span = max(now - last_log_time, 1e-9)
             sps = (done - last_log_step) / span
@@ -184,6 +190,13 @@ def main():
             log(f"step {done:>6}/{args.steps} ({pct:5.1f}%) | loss {lv:.4f} | smooth {run_loss:.4f} | "
                 f"lr {lr:.2e} | {sps:6.2f} steps/s | elapsed {fmt_time(now - t0)} | eta {fmt_time(remaining)}")
             last_log_time, last_log_step = now, done
+
+        if done % args.eval_every == 0 or done == args.steps:
+            log(f"running validation at step {done} ({args.eval_iters} batches per split, may take a moment)...")
+            losses = estimate_loss(model, splits, cfg, args.batch_size, device, args.eval_iters)
+            log(f"[eval] step {done}/{args.steps}: train {losses['train']:.4f} val {losses['val']:.4f} "
+                f"elapsed {fmt_time(time.time() - t0)}")
+            last_log_time, last_log_step = time.time(), done
 
         if done % args.save_every == 0:
             save_checkpoint(args.out, model, optimizer, done, tokenizer)

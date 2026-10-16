@@ -10,6 +10,13 @@ SAFE STOPS: on SIGTERM (for example from `kill`) or Ctrl-C, training finishes th
 saves a checkpoint, and exits. Saves are written to a temp file first, so a checkpoint is never
 left half-written.
 
+SPEED FLAGS (all opt-in, all off by default, so existing runs behave exactly as before):
+  --threads N   set torch CPU threads to N (0 = leave torch's default, which is the physical core count)
+  --bf16        run the forward pass under torch.autocast(cpu, bfloat16). Weights and optimizer stay
+                float32, so checkpoints are unchanged. Falls back to float32 if bfloat16 is not usable.
+  --compile     wrap the model in torch.compile for training steps. Falls back to eager if unsupported.
+                Checkpoints always store the plain model, never the compiled wrapper.
+
 Progress: the first 10 steps print one line each. After that a line prints every --log_every
 steps. A validation pass runs every --eval_every steps. All output is flushed immediately.
 """
@@ -51,10 +58,30 @@ def get_device():
 
 
 def get_batch(data, block_size, batch_size, device):
+    # Same random draws as before (so resumed runs see the same batches), but the slicing is one
+    # gather per tensor instead of a Python loop of slices and stacks.
     ix = torch.randint(len(data) - block_size - 1, (batch_size,))
-    x = torch.stack([data[i:i + block_size] for i in ix])
-    y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
-    return x.to(device), y.to(device)
+    offs = torch.arange(block_size)
+    rows = ix.unsqueeze(1) + offs
+    x = data[rows]
+    y = data[rows + 1]
+    return x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+
+
+def bf16_usable():
+    """True only if a bfloat16 CPU autocast region runs on this machine."""
+    try:
+        with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+            probe = torch.ones(2, 2) @ torch.ones(2, 2)
+        return bool(probe.dtype is not None)
+    except Exception:
+        return False
+
+
+def set_threads(n):
+    if n and n > 0:
+        torch.set_num_threads(n)
+    return torch.get_num_threads()
 
 
 @torch.no_grad()
@@ -134,6 +161,9 @@ def main():
     p.add_argument("--n_head", type=int, default=8)
     p.add_argument("--n_embd", type=int, default=352)
     p.add_argument("--block_size", type=int, default=256)
+    p.add_argument("--threads", type=int, default=0, help="CPU threads for torch (0 = torch default)")
+    p.add_argument("--bf16", action="store_true", help="bfloat16 autocast on CPU (falls back to float32)")
+    p.add_argument("--compile", action="store_true", help="torch.compile the training forward (falls back to eager)")
     args = p.parse_args()
 
     signal.signal(signal.SIGTERM, request_stop)
@@ -141,7 +171,17 @@ def main():
 
     device = get_device()
     torch.manual_seed(1337)
+    if device == "cpu":
+        log(f"cpu threads: {set_threads(args.threads)}")
     log(f"device: {device}")
+
+    use_bf16 = False
+    if args.bf16:
+        if device == "cpu" and bf16_usable():
+            use_bf16 = True
+            log("bf16 autocast: on (weights and optimizer stay float32)")
+        else:
+            log("bf16 autocast: requested but not usable here, running float32")
 
     with open(args.data, "r", encoding="utf-8") as f:
         text = f.read()
@@ -170,6 +210,16 @@ def main():
         cfg = PipConfig(vocab_size=tokenizer.vocab_size, block_size=args.block_size,
                         n_layer=args.n_layer, n_head=args.n_head, n_embd=args.n_embd)
         model = PipLM(cfg).to(device)
+
+    # train_model is used for training forwards only. The plain model is always what gets saved
+    # and what eval uses, so checkpoints and resume never see a compiled wrapper.
+    train_model = model
+    if args.compile:
+        try:
+            train_model = torch.compile(model)
+            log("torch.compile: on (first step will be slow while it compiles)")
+        except Exception as exc:
+            log(f"torch.compile: unavailable ({type(exc).__name__}), running eager")
 
     log("encoding data...")
     data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
@@ -203,7 +253,8 @@ def main():
                 g["lr"] = lr
 
             x, y = get_batch(splits["train"], cfg.block_size, args.batch_size, device)
-            _, loss = model(x, y)
+            with torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=use_bf16):
+                _, loss = train_model(x, y)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

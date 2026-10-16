@@ -3,16 +3,31 @@
 Usage: python train.py --data input.txt --out checkpoints/pip.pt --steps 5000
 A fresh run trains the BPE tokenizer on the data. Resuming reuses the tokenizer stored in the
 checkpoint, so the token IDs stay consistent.
+
+Progress: a live line prints every --log_every steps (step, loss, lr, steps/sec, ETA).
+A full validation pass prints every --eval_every steps. All output is flushed immediately,
+so it shows up live in the terminal and in `tail -f train.log` even without `python -u`.
 """
 import argparse
 import math
 import os
+import sys
 import time
 
 import torch
 
 from model import PipConfig, PipLM
 from tokenizer import BPETokenizer
+
+# Line-buffer stdout so every print appears right away (also helps when piped to a log file).
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except AttributeError:
+    pass
+
+
+def log(msg):
+    print(msg, flush=True)
 
 
 def get_device():
@@ -54,6 +69,13 @@ def lr_at(step, args):
     return min_lr + 0.5 * (args.lr - min_lr) * (1.0 + math.cos(math.pi * progress))
 
 
+def fmt_time(seconds):
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h{m:02d}m{s:02d}s" if h else f"{m:02d}m{s:02d}s"
+
+
 def save_checkpoint(path, model, optimizer, step, tokenizer):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     torch.save({
@@ -83,7 +105,8 @@ def main():
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--warmup", type=int, default=200)
-    p.add_argument("--eval_every", type=int, default=500)
+    p.add_argument("--log_every", type=int, default=10, help="print a live progress line every N steps")
+    p.add_argument("--eval_every", type=int, default=250, help="full train/val evaluation every N steps")
     p.add_argument("--save_every", type=int, default=1000)
     p.add_argument("--vocab_size", type=int, default=2048)
     p.add_argument("--n_layer", type=int, default=6)
@@ -94,7 +117,7 @@ def main():
 
     device = get_device()
     torch.manual_seed(1337)
-    print(f"device: {device}")
+    log(f"device: {device}")
 
     with open(args.data, "r", encoding="utf-8") as f:
         text = f.read()
@@ -106,44 +129,68 @@ def main():
         cfg = model.cfg
         tokenizer = BPETokenizer.from_state(ckpt["tokenizer"])
         start_step = ckpt["step"]
-        print(f"resumed from {args.resume} at step {start_step}")
+        log(f"resumed from {args.resume} at step {start_step}")
     else:
-        print("training BPE tokenizer...")
+        log("training BPE tokenizer (this can take a few minutes on a large file)...")
+        t_tok = time.time()
         tokenizer = BPETokenizer.train(text, args.vocab_size)
+        log(f"tokenizer ready in {fmt_time(time.time() - t_tok)}")
         cfg = PipConfig(vocab_size=tokenizer.vocab_size, block_size=args.block_size,
                         n_layer=args.n_layer, n_head=args.n_head, n_embd=args.n_embd)
         model = PipLM(cfg).to(device)
 
+    log("encoding data...")
     data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
     n = int(0.9 * len(data))
     splits = {"train": data[:n], "val": data[n:]}
-    print(f"vocab: {tokenizer.vocab_size} | tokens: {len(data)} | chars: {len(text)}")
-    print(f"parameters: {model.num_parameters() / 1e6:.2f}M")
+    log(f"vocab: {tokenizer.vocab_size} | tokens: {len(data)} | chars: {len(text)}")
+    log(f"parameters: {model.num_parameters() / 1e6:.2f}M")
+    log(f"training steps {start_step} to {args.steps} | batch {args.batch_size} | block {cfg.block_size}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1, betas=(0.9, 0.95))
     if ckpt is not None:
         optimizer.load_state_dict(ckpt["optimizer"])
 
     t0 = time.time()
+    run_loss = None
+    last_log_time, last_log_step = t0, start_step
     for step in range(start_step, args.steps):
         lr = lr_at(step, args)
         for g in optimizer.param_groups:
             g["lr"] = lr
+
         if step % args.eval_every == 0 or step == args.steps - 1:
             losses = estimate_loss(model, splits, cfg, args.batch_size, device)
-            print(f"step {step}: train {losses['train']:.4f} val {losses['val']:.4f} "
-                  f"lr {lr:.2e} elapsed {time.time() - t0:.0f}s")
+            log(f"[eval] step {step}/{args.steps}: train {losses['train']:.4f} val {losses['val']:.4f} "
+                f"lr {lr:.2e} elapsed {fmt_time(time.time() - t0)}")
+
         x, y = get_batch(splits["train"], cfg.block_size, args.batch_size, device)
         _, loss = model(x, y)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-        if (step + 1) % args.save_every == 0:
-            save_checkpoint(args.out, model, optimizer, step + 1, tokenizer)
+
+        lv = loss.item()
+        run_loss = lv if run_loss is None else 0.9 * run_loss + 0.1 * lv
+
+        done = step + 1
+        if done % args.log_every == 0 or done == args.steps:
+            now = time.time()
+            span = max(now - last_log_time, 1e-9)
+            sps = (done - last_log_step) / span
+            remaining = (args.steps - done) / sps if sps > 0 else 0
+            pct = 100.0 * done / args.steps
+            log(f"step {done:>6}/{args.steps} ({pct:5.1f}%) | loss {lv:.4f} | smooth {run_loss:.4f} | "
+                f"lr {lr:.2e} | {sps:6.2f} steps/s | elapsed {fmt_time(now - t0)} | eta {fmt_time(remaining)}")
+            last_log_time, last_log_step = now, done
+
+        if done % args.save_every == 0:
+            save_checkpoint(args.out, model, optimizer, done, tokenizer)
+            log(f"checkpoint saved at step {done} -> {args.out}")
 
     save_checkpoint(args.out, model, optimizer, args.steps, tokenizer)
-    print(f"saved {args.out}")
+    log(f"saved {args.out}")
 
 
 if __name__ == "__main__":

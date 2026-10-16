@@ -1,14 +1,18 @@
-"""Train Pip on a plain-text file with AdamW and cross-entropy loss.
+"""Train Pip on a plain-text file: BPE tokenizer, AdamW, warmup + cosine LR, cross-entropy loss.
 
-Usage: python train.py --data input.txt --out checkpoints --steps 5000
+Usage: python train.py --data input.txt --out checkpoints/pip.pt --steps 5000
+A fresh run trains the BPE tokenizer on the data. Resuming reuses the tokenizer stored in the
+checkpoint, so the token IDs stay consistent.
 """
 import argparse
+import math
 import os
+import time
 
 import torch
 
 from model import PipConfig, PipLM
-from tokenizer import CharTokenizer
+from tokenizer import BPETokenizer
 
 
 def get_device():
@@ -27,7 +31,7 @@ def get_batch(data, block_size, batch_size, device):
 
 
 @torch.no_grad()
-def estimate_loss(model, splits, cfg, batch_size, device, iters=50):
+def estimate_loss(model, splits, cfg, batch_size, device, iters=20):
     model.eval()
     out = {}
     for name, data in splits.items():
@@ -41,6 +45,15 @@ def estimate_loss(model, splits, cfg, batch_size, device, iters=50):
     return out
 
 
+def lr_at(step, args):
+    """Linear warmup, then cosine decay down to 10% of the peak learning rate."""
+    if step < args.warmup:
+        return args.lr * (step + 1) / args.warmup
+    progress = min(1.0, (step - args.warmup) / max(1, args.steps - args.warmup))
+    min_lr = 0.1 * args.lr
+    return min_lr + 0.5 * (args.lr - min_lr) * (1.0 + math.cos(math.pi * progress))
+
+
 def save_checkpoint(path, model, optimizer, step, tokenizer):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     torch.save({
@@ -48,8 +61,9 @@ def save_checkpoint(path, model, optimizer, step, tokenizer):
         "optimizer": optimizer.state_dict(),
         "config": model.cfg.__dict__,
         "step": step,
-        "chars": tokenizer.chars,
+        "tokenizer": tokenizer.state(),
     }, path)
+    tokenizer.save(os.path.join(os.path.dirname(path) or ".", "tokenizer.json"))
 
 
 def load_checkpoint(path, device):
@@ -67,12 +81,14 @@ def main():
     p.add_argument("--resume", default=None, help="checkpoint path to resume from")
     p.add_argument("--steps", type=int, default=5000)
     p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--warmup", type=int, default=200)
     p.add_argument("--eval_every", type=int, default=500)
     p.add_argument("--save_every", type=int, default=1000)
+    p.add_argument("--vocab_size", type=int, default=2048)
     p.add_argument("--n_layer", type=int, default=6)
-    p.add_argument("--n_head", type=int, default=6)
-    p.add_argument("--n_embd", type=int, default=384)
+    p.add_argument("--n_head", type=int, default=8)
+    p.add_argument("--n_embd", type=int, default=352)
     p.add_argument("--block_size", type=int, default=256)
     args = p.parse_args()
 
@@ -82,31 +98,41 @@ def main():
 
     with open(args.data, "r", encoding="utf-8") as f:
         text = f.read()
-    tokenizer = CharTokenizer(list(set(text)))
-    data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
-    n = int(0.9 * len(data))
-    splits = {"train": data[:n], "val": data[n:]}
 
+    ckpt = None
     start_step = 0
     if args.resume:
         model, ckpt = load_checkpoint(args.resume, device)
         cfg = model.cfg
+        tokenizer = BPETokenizer.from_state(ckpt["tokenizer"])
         start_step = ckpt["step"]
         print(f"resumed from {args.resume} at step {start_step}")
     else:
+        print("training BPE tokenizer...")
+        tokenizer = BPETokenizer.train(text, args.vocab_size)
         cfg = PipConfig(vocab_size=tokenizer.vocab_size, block_size=args.block_size,
                         n_layer=args.n_layer, n_head=args.n_head, n_embd=args.n_embd)
         model = PipLM(cfg).to(device)
+
+    data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
+    n = int(0.9 * len(data))
+    splits = {"train": data[:n], "val": data[n:]}
+    print(f"vocab: {tokenizer.vocab_size} | tokens: {len(data)} | chars: {len(text)}")
     print(f"parameters: {model.num_parameters() / 1e6:.2f}M")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1, betas=(0.9, 0.95))
-    if args.resume:
+    if ckpt is not None:
         optimizer.load_state_dict(ckpt["optimizer"])
 
+    t0 = time.time()
     for step in range(start_step, args.steps):
+        lr = lr_at(step, args)
+        for g in optimizer.param_groups:
+            g["lr"] = lr
         if step % args.eval_every == 0 or step == args.steps - 1:
             losses = estimate_loss(model, splits, cfg, args.batch_size, device)
-            print(f"step {step}: train {losses['train']:.4f} val {losses['val']:.4f}")
+            print(f"step {step}: train {losses['train']:.4f} val {losses['val']:.4f} "
+                  f"lr {lr:.2e} elapsed {time.time() - t0:.0f}s")
         x, y = get_batch(splits["train"], cfg.block_size, args.batch_size, device)
         _, loss = model(x, y)
         optimizer.zero_grad(set_to_none=True)
@@ -115,10 +141,8 @@ def main():
         optimizer.step()
         if (step + 1) % args.save_every == 0:
             save_checkpoint(args.out, model, optimizer, step + 1, tokenizer)
-            tokenizer.save(os.path.join(os.path.dirname(args.out) or ".", "tokenizer.json"))
 
     save_checkpoint(args.out, model, optimizer, args.steps, tokenizer)
-    tokenizer.save(os.path.join(os.path.dirname(args.out) or ".", "tokenizer.json"))
     print(f"saved {args.out}")
 
 

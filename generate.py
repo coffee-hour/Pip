@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from model import PipConfig, PipLM
-from tokenizer import CharTokenizer
+from tokenizer import BPETokenizer
 
 
 def load_model(ckpt_path, device="cpu"):
@@ -17,7 +17,7 @@ def load_model(ckpt_path, device="cpu"):
     model = PipLM(cfg).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
-    tok = CharTokenizer(ckpt["chars"])
+    tok = BPETokenizer.from_state(ckpt["tokenizer"])
     return model, tok
 
 

@@ -1,4 +1,9 @@
-"""Pip: a decoder-only transformer language model written from scratch in PyTorch."""
+"""Pip: a decoder-only transformer language model written from scratch in PyTorch.
+
+Default config is about 9.7M parameters: vocab 2048, 6 layers, 8 heads, width 352, context 256.
+The small vocabulary keeps the embedding table (2048 x 352 = 0.72M, tied with the output head)
+small, so most parameters sit in the transformer blocks where they help learning.
+"""
 import math
 from dataclasses import dataclass
 
@@ -9,11 +14,11 @@ import torch.nn.functional as F
 
 @dataclass
 class PipConfig:
-    vocab_size: int = 65
+    vocab_size: int = 2048     # byte-level BPE vocabulary (256 bytes + merges)
     block_size: int = 256      # context length
     n_layer: int = 6
-    n_head: int = 6
-    n_embd: int = 384
+    n_head: int = 8
+    n_embd: int = 352          # must be divisible by n_head
     dropout: float = 0.1
     bias: bool = False
 

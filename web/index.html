@@ -7,8 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
-  /* Strict black and white. The only colored elements are the mood sprite and the mood indicator,
-     which change color with Pip's mood (the MOODS table in the script). */
+  /* Strict black and white. The only colored elements are the 12x12 sprite and the mood indicator,
+     which take Pip's current mood color (any hex Pip chooses). */
   :root {
     --bg: #0d0d0d;
     --black: #000000;
@@ -16,7 +16,7 @@
     --text: #e6e6e6;
     --muted: #8a8a8a;
     --border: #3a3a3a;
-    --border-strong: #ffffff;
+    --mood: #ffffff;
     --font: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
@@ -35,11 +35,17 @@
   .panel h2 { margin: 0 0 10px; font-size: 0.75rem; color: var(--white); letter-spacing: 0.2em; text-transform: uppercase; font-weight: 700; }
 
   .sprite-box { display: flex; flex-direction: column; align-items: center; gap: 10px; }
-  /* sprite color is set from the mood (the only colored text on the page) */
-  #sprite { margin: 0; font-size: 1.1rem; line-height: 1.25; transition: color 0.4s, text-shadow 0.4s; white-space: pre; }
+  /* 12x12 pixel sprite. Filled cells take the mood color; empty cells are transparent. */
+  #sprite {
+    display: grid; grid-template-columns: repeat(12, 14px); grid-template-rows: repeat(12, 14px);
+    gap: 1px; margin: 0; padding: 6px; background: var(--black); border: 1px solid var(--border); border-radius: 4px;
+  }
+  #sprite span { width: 14px; height: 14px; background: transparent; transition: background 0.4s, box-shadow 0.4s; }
+  #sprite span.on { background: var(--mood); box-shadow: 0 0 6px var(--mood); }
   .mood-row { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text); }
-  /* mood indicator square: the only other colored element, follows the mood */
-  #moodSquare { width: 18px; height: 18px; border-radius: 3px; background: var(--white); transition: background 0.4s; }
+  /* mood indicator square: follows the mood color */
+  #moodSquare { width: 18px; height: 18px; border-radius: 3px; background: var(--mood); box-shadow: 0 0 8px var(--mood); transition: background 0.4s, box-shadow 0.4s; }
+  #moodHex { color: var(--muted); font-size: 0.7rem; }
   #brain { color: var(--muted); font-size: 0.75rem; }
 
   .side-list { list-style: none; padding: 0; margin: 0; font-size: 0.8rem; max-height: 180px; overflow-y: auto; }
@@ -50,12 +56,10 @@
   #log { flex: 1; overflow-y: auto; font-size: 0.9rem; line-height: 1.5; padding-right: 6px; max-height: 60vh; }
   .line { margin: 0 0 8px; white-space: pre-wrap; word-wrap: break-word; color: var(--text); }
   .who { font-weight: 700; color: var(--white); }
-  .line.user .who { color: var(--white); }
-  .line.pip .who { color: var(--white); }
   .line.pip { color: var(--text); }
+  .line.thought { color: var(--muted); font-size: 0.8rem; font-style: italic; }
   .line.web { color: var(--muted); font-size: 0.8rem; border-left: 2px solid var(--border); padding-left: 8px; }
   .line.warn { color: var(--text); }
-  .line.warn .who { color: var(--white); }
   .line.err { color: var(--white); text-decoration: underline; }
   .line.sys { color: var(--muted); }
 
@@ -95,8 +99,9 @@
     <aside class="panel">
       <h2>Companion</h2>
       <div class="sprite-box">
-        <pre id="sprite" aria-label="Pip mood sprite"></pre>
+        <div id="sprite" role="img" aria-label="Pip sprite"></div>
         <div class="mood-row"><span id="moodSquare"></span><span id="moodLabel">curious</span></div>
+        <div id="moodHex"></div>
         <div id="brain">Brain: loading...</div>
       </div>
       <h2 style="margin-top:18px">Memory</h2>
@@ -167,30 +172,46 @@
   resize();
   requestAnimationFrame(drawStars);
 
-  // ---------- mood sprites (colors here are the only non-monochrome values on the page) ----------
-  const MOODS = {
-    curious:     { color: '#ff8c00', eyes: ['o', 'o'], mouth: '  ?   ', label: 'curious' },
-    focused:     { color: '#4fc3f7', eyes: ['-', '-'], mouth: '  _   ', label: 'focused' },
-    chill:       { color: '#7cfc9a', eyes: ['^', '^'], mouth: '  u   ', label: 'chill' },
-    cranky:      { color: '#ff4d4d', eyes: ['>', '<'], mouth: '  n   ', label: 'cranky' },
-    overwhelmed: { color: '#e879f9', eyes: ['@', '@'], mouth: ' ~~~~ ', label: 'overwhelmed' },
-  };
+  // ---------- 12x12 sprite and mood color ----------
+  const SIZE = 12;
+  const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
   const spriteEl = document.getElementById('sprite');
   const squareEl = document.getElementById('moodSquare');
   const moodLabel = document.getElementById('moodLabel');
-  function drawSprite(mood) {
-    const m = MOODS[mood] || MOODS.curious;
-    const rows = [
-      ' .----. ',
-      `| ${m.eyes[0]}  ${m.eyes[1]} |`,
-      `|${m.mouth}|`,
-      ` '----' `,
-    ];
-    spriteEl.textContent = rows.join('\n');
-    spriteEl.style.color = m.color;
-    spriteEl.style.textShadow = `0 0 8px ${m.color}`;
-    squareEl.style.background = m.color;
-    moodLabel.textContent = m.label;
+  const moodHex = document.getElementById('moodHex');
+  const cells = [];
+  for (let i = 0; i < SIZE * SIZE; i++) {
+    const c = document.createElement('span');
+    spriteEl.appendChild(c);
+    cells.push(c);
+  }
+  let currentRows = null;  // last valid 12 rows, kept when a turn has no new sprite
+
+  function validHex(h) {
+    return typeof h === 'string' && HEX_RE.test(h) ? h : '#ffffff';
+  }
+  function validRows(rows) {
+    return Array.isArray(rows) && rows.length === SIZE && rows.every((r) => typeof r === 'string')
+      ? rows.map((r) => r.padEnd(SIZE, '.').slice(0, SIZE))
+      : null;
+  }
+  function paintSprite(rows) {
+    for (let y = 0; y < SIZE; y++) {
+      for (let x = 0; x < SIZE; x++) {
+        cells[y * SIZE + x].className = rows[y][x] === '#' ? 'on' : '';
+      }
+    }
+  }
+  // mood: {name, hex, sprite}. Missing parts fall back to the previous sprite or the default.
+  function drawMood(mood) {
+    if (!mood || typeof mood !== 'object') return;
+    const hex = validHex(mood.hex);
+    const rows = validRows(mood.sprite);
+    if (rows) currentRows = rows;
+    if (currentRows) paintSprite(currentRows);
+    document.documentElement.style.setProperty('--mood', hex);
+    moodLabel.textContent = String(mood.name || 'curious').slice(0, 24);
+    moodHex.textContent = hex;
   }
 
   // ---------- DOM refs ----------
@@ -311,8 +332,9 @@
     try {
       const { ok, data } = await post('/api/chat', { text });
       if (!ok) { addLine('!', data.error || 'something went wrong', 'err'); return; }
+      if (data.thought) addLine('thought:', data.thought, 'thought');
       addLine('pip:', data.reply, 'pip');
-      drawSprite(data.mood);
+      drawMood(data.mood);
       brainEl.textContent = 'Brain: ' + data.brain;
     } catch (e) {
       addLine('!', 'Cannot reach the Pip server. Is server.py running?', 'err');
@@ -365,7 +387,7 @@
     try {
       const r = await fetch('/api/state');
       const s = await r.json();
-      drawSprite(s.mood);
+      drawMood(s.mood);
       brainEl.textContent = 'Brain: ' + s.brain;
       renderFacts(s.facts);
       for (const h of s.history) {
@@ -374,7 +396,7 @@
       }
       addLine('sys:', 'Pip is online. Type /help for commands. Pip stays offline unless you approve a web request.', 'sys');
     } catch (e) {
-      drawSprite('curious');
+      drawMood({ name: 'curious', hex: '#ff8c00', sprite: null });
       brainEl.textContent = 'Brain: offline';
       addLine('!', 'Cannot reach the Pip server. Start it with: python server.py', 'err');
     }

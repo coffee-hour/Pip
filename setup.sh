@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up Pip on Python 3.11 or 3.12 with CPU-only PyTorch (no CUDA downloads, no source builds).
+# Install Pip dependencies (numpy + CPU-only torch) on Python 3.11 or 3.12, then start training.
 set -euo pipefail
 
 PY=""
@@ -22,9 +22,11 @@ echo "Using $PY ($($PY --version))"
 "$PY" -m pip install --upgrade pip
 
 # CPU-only wheel index: small download, no CUDA, no compilation.
-"$PY" -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+"$PY" -m pip install numpy torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 
 "$PY" -m pip install -r requirements.txt
 
-"$PY" -c "import torch; print('torch', torch.__version__, 'cuda available:', torch.cuda.is_available())"
-echo "Pip setup complete. Next: python train.py --data input.txt --steps 1000"
+"$PY" -c "import numpy, torch; print('numpy', numpy.__version__, '| torch', torch.__version__, '| cuda available:', torch.cuda.is_available())"
+echo "Dependencies ready. Starting training: python train.py --data input.txt"
+
+exec "$PY" train.py --data input.txt --out checkpoints/pip.pt --steps 5000

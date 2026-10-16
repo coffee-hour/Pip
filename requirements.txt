@@ -1,2 +1,3 @@
-# Installed by setup.sh with the CPU-only PyTorch index. Keep torch here so pip sees it as satisfied.
+# torch is installed by setup.sh from the CPU-only PyTorch index. Listed here so pip treats it as satisfied.
 torch>=2.1
+numpy>=1.24

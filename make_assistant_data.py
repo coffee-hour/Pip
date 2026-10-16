@@ -2,6 +2,9 @@
 
 Each example is a User turn followed by a Pip turn in the reply protocol:
 MOOD[name, #hex] THOUGHT[...], then SPRITE[ 12 rows ], then the reply text.
+Some examples also use tool tags. The tool line is followed by an OBSERVATION[...] line that
+the runtime writes, then a second 'Pip:' line with the grounded reply. The runtime, not the
+model, writes OBSERVATION, so a trained model learns to stop after a tool tag.
 Deterministic (fixed seed). Standard library only.
 
 Usage: python make_assistant_data.py
@@ -99,6 +102,39 @@ SEEDS = [
     ('rate my idea: a plant watering reminder', 'focused', 'They want feedback. Be specific.', 'It is useful and simple. A reminder that checks soil moisture would make it even better.'),
 ]
 
+# Tool examples: (prompt, mood, thought, tool_line, observation, reply).
+# tool_line is the tag Pip emits. observation is what the runtime returns. reply is grounded in it.
+TOOL_SEEDS = [
+    ('I work nights at the hospital', 'chill', 'They shared a fact about their job. Save it.',
+     'REMEMBER[works nights at the hospital]', None,
+     'Got it. I will remember that you work nights at the hospital.'),
+    ('my favorite color is green', 'chill', 'A preference. Save it short.',
+     'REMEMBER[favorite color: green]', None,
+     'Noted. Green is your favorite color, and I have saved it.'),
+    ('my dog is called Biscuit', 'chill', 'A pet name worth keeping.',
+     'REMEMBER[pet: dog named Biscuit]', None,
+     'Biscuit is a great name. I will remember your dog.'),
+    ('what is the weather in Lisbon right now?', 'curious', 'Live weather needs a search. Ask through the tool.',
+     'SEARCH[current weather in Lisbon]',
+     'Lisbon: 21 C, light wind, partly cloudy (search excerpt).',
+     'Lisbon is about 21 C with light wind and partly cloudy skies, based on the search I ran.'),
+    ('who won the last Nobel prize in physics?', 'focused', 'A fact that may have changed. Check it.',
+     'SEARCH[latest Nobel prize in physics winner]',
+     'Search excerpt: results list the most recent laureates by year.',
+     'The search results list the recent laureates by year. Open the Nobel Prize site for the latest winner, since I could only read the excerpt.'),
+    ('what is the population of Canada?', 'curious', 'A number that changes. Look it up.',
+     'SEARCH[current population of Canada]',
+     'Search excerpt: population estimates near 41 million in recent years.',
+     'The search excerpt puts Canada near 41 million people in recent years. Check Statistics Canada for the exact current figure.'),
+    ('read my notes file', 'focused', 'They want a saved file. Read it.',
+     'READ_FILE[notes.txt]',
+     'notes.txt: buy oat milk; call the dentist on Monday.',
+     'Your notes say to buy oat milk and call the dentist on Monday.'),
+    ('save a shopping list for me', 'focused', 'They want a file written. Ask before writing.',
+     'WRITE_FILE[shopping.txt, oat milk, eggs, bread]', None,
+     'I wrote the shopping list to shopping.txt in pip_files. You approved the write before it happened.'),
+]
+
 
 def sprite_for(mood):
     if mood == 'curious':
@@ -108,10 +144,14 @@ def sprite_for(mood):
     return SMILE
 
 
-def example(prompt, mood, thought, reply, rng):
-    rows = sprite_for(mood)
+def flip(rows, rng):
     if rng.random() < 0.5:
-        rows = [r[::-1] for r in rows]
+        return [r[::-1] for r in rows]
+    return rows
+
+
+def example(prompt, mood, thought, reply, rng):
+    rows = flip(sprite_for(mood), rng)
     lines = [
         'User: ' + prompt,
         'Pip: MOOD[' + mood + ', ' + MOODS[mood] + '] THOUGHT[' + thought + ']',
@@ -120,16 +160,36 @@ def example(prompt, mood, thought, reply, rng):
     return NL.join(lines) + NL
 
 
+def tool_example(prompt, mood, thought, tool_line, observation, reply, rng):
+    rows = flip(sprite_for(mood), rng)
+    lines = [
+        'User: ' + prompt,
+        'Pip: MOOD[' + mood + ', ' + MOODS[mood] + '] THOUGHT[' + thought + ']',
+        'SPRITE[',
+    ] + rows + [']', tool_line]
+    if observation is not None:
+        lines.append('OBSERVATION[' + observation + ']')
+        lines.append('Pip: ' + reply)
+    else:
+        lines.append(reply)
+    lines.append('')
+    return NL.join(lines) + NL
+
+
 def main():
     rng = random.Random(SEED)
     chunks = []
     for _ in range(PASSES):
-        order = list(SEEDS)
+        order = list(SEEDS) + list(TOOL_SEEDS)
         rng.shuffle(order)
-        for prompt, mood, thought, reply in order:
+        for item in order:
             if rng.random() < 0.3:
-                prompt = prompt.lower()
-            chunks.append(example(prompt, mood, thought, reply, rng))
+                item = (item[0].lower(),) + tuple(item[1:])
+            if len(item) == 4:
+                prompt, mood, thought, reply = item
+                chunks.append(example(prompt, mood, thought, reply, rng))
+            else:
+                chunks.append(tool_example(*item, rng=rng))
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     tmp = OUT + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:

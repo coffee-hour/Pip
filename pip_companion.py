@@ -4,13 +4,24 @@
 Standard library only. No installs, no servers, no browser automation.
 
 Reply protocol. Pip may put these tags in a reply. Text outside the tags is what the user sees.
-  MOOD[name, #hex]   any mood name and any hex color, e.g. MOOD[sleepy, #6b8cff]
-  SPRITE[ ... ]      12 rows of 12 characters. '#' is a filled pixel, '.' is empty.
-  THOUGHT[ ... ]     a short private note. Shown in gray, kept out of the reply text.
-Every tag is optional. A missing or invalid tag keeps the previous mood or sprite.
+  MOOD[name, #hex]        any mood name and any hex color, e.g. MOOD[sleepy, #6b8cff]
+  SPRITE[ ... ]           12 rows of 12 characters. '#' is filled, '.' is empty.
+  THOUGHT[ ... ]          a short private note, shown in gray, kept out of the reply text
+  REMEMBER[fact]          save a fact. REMEMBER[key: value] also sets profile[key].
+  READ_FILE[name]         read a file from pip_files/ (no approval needed)
+  WRITE_FILE[name, text]  write a file in pip_files/ (you approve first)
+  SEARCH[query]           web search (you approve first)
+  OBSERVATION[...]        written by the runtime only. Pip text containing it is removed.
+Every tag is optional. A missing or invalid tag keeps the previous value.
+
+Turn loop: when Pip emits a tool tag, the runtime cuts the reply there, runs the tool, appends
+OBSERVATION[result] to the prompt, and lets Pip continue. At most 2 tool rounds per turn.
+
+Context: before each turn, the most relevant saved facts are placed at the head of the prompt as
+FACTS: [...], within a fixed character budget.
 
 Usage: python pip_companion.py [--ckpt checkpoints/pip.pt] [--no-color]
-Commands: /web <query>, /remember <fact>, /facts, /clear, /help, /quit
+Commands: /web <query>, /remember <fact>, /facts, /files, /clear, /help, /quit
 """
 import argparse
 import json
@@ -25,11 +36,21 @@ from datetime import datetime
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MEMORY_PATH = os.path.join(ROOT, "memory.json")
+FILES_DIR = os.path.join(ROOT, "pip_files")
 DEFAULT_CKPT = os.path.join(ROOT, "checkpoints", "pip.pt")
 HISTORY_LIMIT = 200
 
 SPRITE_SIZE = 12
 FILL = "#"
+
+MAX_CONTEXT_CHARS = 360   # budget for the FACTS line (about 90 tokens with the byte BPE)
+MAX_CONTEXT_FACTS = 8
+MAX_TOOL_ROUNDS = 2
+MAX_NEW_TOKENS = 120
+MAX_FILE_CHARS = 4000
+MAX_OBS_CHARS = 700
+FILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,58}\.[A-Za-z0-9]{1,8}$")
+WORD_RE = re.compile(r"[a-z]{3,}")
 
 # Presets are defaults only. Pip can name any mood and give it any hex color in a reply.
 PRESET_MOODS = {
@@ -65,6 +86,12 @@ HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 TAG_MOOD = re.compile(r"MOOD\[([^\]]*)\]", re.I)
 TAG_SPRITE = re.compile(r"SPRITE\[([^\]]*)\]", re.I)
 TAG_THOUGHT = re.compile(r"THOUGHT\[([^\]]*)\]", re.I)
+TAG_REMEMBER = re.compile(r"REMEMBER\[([^\]]*)\]", re.I)
+TAG_SEARCH = re.compile(r"SEARCH\[([^\]]*)\]", re.I)
+TAG_READ = re.compile(r"READ_FILE\[([^\]]*)\]", re.I)
+TAG_WRITE = re.compile(r"WRITE_FILE\[([^,\]]*),([^\]]*)\]", re.I)
+TAG_OBS = re.compile(r"OBSERVATION\[[^\]]*\]", re.I)
+TOOL_TAGS = [("search", TAG_SEARCH), ("read", TAG_READ), ("write", TAG_WRITE)]
 
 MOOD_KEYWORDS = [
     ("overwhelmed", r"\b(too much|overwhelm\w*|stress\w*|swamped|tired|exhaust\w*)\b"),
@@ -97,7 +124,7 @@ def clear_screen():
 # ---------- memory ledger ----------
 
 def load_memory():
-    default = {"facts": [], "history": [], "mood": DEFAULT_MOOD,
+    default = {"facts": [], "profile": {}, "notes": [], "history": [], "mood": DEFAULT_MOOD,
                "mood_hex": PRESET_MOODS[DEFAULT_MOOD], "sprite": list(DEFAULT_SPRITE)}
     if not os.path.exists(MEMORY_PATH):
         return default
@@ -129,6 +156,47 @@ def add_fact(memory, fact):
         memory["facts"].append(fact)
         return True
     return False
+
+
+def remember(memory, value):
+    """Save one fact. 'key: value' also sets memory['profile'][key]."""
+    value = value.replace("[", "").replace("]", "").strip()[:300]
+    if not value:
+        return False
+    key, sep, val = value.partition(":")
+    if sep and key.strip() and val.strip():
+        memory["profile"][key.strip()[:40]] = val.strip()[:200]
+    return add_fact(memory, value)
+
+
+def context_facts(memory, query):
+    """Pick facts for the FACTS line: word overlap with the query, plus the 3 newest, within budget."""
+    words = set(WORD_RE.findall(query.lower()))
+    facts = memory["facts"]
+    ranked = []
+    for i, f in enumerate(facts):
+        overlap = len(words & set(WORD_RE.findall(f.lower())))
+        recent = i >= len(facts) - 3
+        if overlap or recent:
+            ranked.append((overlap, i, f))
+    ranked.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    picked, used = [], 0
+    for _, i, f in ranked:
+        if len(picked) >= MAX_CONTEXT_FACTS:
+            break
+        cost = len(f) + 2
+        if used + cost > MAX_CONTEXT_CHARS:
+            continue
+        picked.append((i, f))
+        used += cost
+    picked.sort()
+    return [f for _, f in picked]
+
+
+def build_prompt(memory, text):
+    facts = context_facts(memory, text)
+    head = ("FACTS: [" + "; ".join(facts) + "]\n") if facts else ""
+    return head + "User: " + text + "\nPip:"
 
 
 # ---------- mood and reply protocol ----------
@@ -184,11 +252,27 @@ def parse_reply(raw):
     t = TAG_THOUGHT.search(raw)
     if t:
         thought = " ".join(t.group(1).split())[:300] or None
-    text = TAG_MOOD.sub("", raw)
-    text = TAG_SPRITE.sub("", text)
-    text = TAG_THOUGHT.sub("", text)
+    remember_values = [r.strip() for r in TAG_REMEMBER.findall(raw) if r.strip()]
+    text = raw
+    for pattern in (TAG_MOOD, TAG_SPRITE, TAG_THOUGHT, TAG_REMEMBER, TAG_SEARCH, TAG_READ, TAG_WRITE, TAG_OBS):
+        text = pattern.sub("", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return {"text": text, "mood": mood, "sprite": sprite, "thought": thought}
+    return {"text": text, "mood": mood, "sprite": sprite, "thought": thought, "remember": remember_values}
+
+
+def first_tool_call(raw):
+    """Return (kind, match) for the earliest tool tag in raw, or None."""
+    best = None
+    for kind, pattern in TOOL_TAGS:
+        m = pattern.search(raw)
+        if m and (best is None or m.start() < best[1].start()):
+            best = (kind, m)
+    return best
+
+
+def clean_turn(raw):
+    """Stop the model before it writes the user's next line."""
+    return re.split(r"\nUser:", raw or "", maxsplit=1)[0]
 
 
 def mood_state(memory):
@@ -212,6 +296,119 @@ def apply_reply(memory, parsed):
         set_mood(memory, name, hx)
     if parsed["sprite"]:
         memory["sprite"] = parsed["sprite"]
+
+
+# ---------- file tools (sandboxed to pip_files/) ----------
+
+def safe_file_name(name):
+    name = (name or "").strip()
+    return name if FILE_NAME_RE.match(name) else None
+
+
+def read_pip_file(name):
+    path = os.path.join(FILES_DIR, name)
+    if not os.path.isfile(path):
+        return name + " does not exist"
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return name + ": " + f.read(MAX_FILE_CHARS)
+
+
+def write_pip_file(name, content):
+    os.makedirs(FILES_DIR, exist_ok=True)
+    path = os.path.join(FILES_DIR, name)
+    tmp = path + ".tmp"
+    body = content[:MAX_FILE_CHARS]
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(body)
+    os.replace(tmp, path)
+    return "wrote " + name + " (" + str(len(body)) + " chars)"
+
+
+def clean_observation(text):
+    text = " ".join(str(text).split()).replace("[", "(").replace("]", ")")
+    return text[:MAX_OBS_CHARS]
+
+
+def run_tool(kind, match, memory, approve, notes):
+    """Run one tool call and return the observation text. approve(message) -> bool asks the user."""
+    if kind == "search":
+        query = match.group(1).strip()[:300]
+        if not query:
+            return "empty search query"
+        if not approve('Pip wants to search the web: "' + query + '"'):
+            log(memory, "gate", "denied: " + query)
+            notes.append("search not approved: no network connection was made")
+            return "search not approved by the user; no network connection made"
+        log(memory, "gate", "approved: " + query)
+        try:
+            excerpt = do_search(query)[:600]
+        except Exception as exc:  # network errors should never crash the companion
+            notes.append("search failed: " + type(exc).__name__)
+            return "search failed"
+        notes.append("searched: " + query)
+        return excerpt
+    if kind == "read":
+        name = safe_file_name(match.group(1))
+        if not name:
+            return "invalid file name"
+        notes.append("read file: " + name)
+        return read_pip_file(name)
+    if kind == "write":
+        name = safe_file_name(match.group(1))
+        if not name:
+            return "invalid file name"
+        content = match.group(2).strip()
+        if not approve("Pip wants to write " + name + " (" + str(len(content)) + " chars) in pip_files/"):
+            notes.append("write not approved: " + name)
+            return "write not approved by the user"
+        result = write_pip_file(name, content)
+        notes.append(result)
+        return result
+    return "unknown tool"
+
+
+# ---------- one turn, including tool rounds ----------
+
+def apply_parsed(memory, parsed, notes):
+    apply_reply(memory, parsed)
+    for value in parsed["remember"]:
+        if remember(memory, value):
+            notes.append("remembered: " + value[:120])
+
+
+def run_turn(text, memory, brain, approve):
+    """Handle one user message. Returns {text, thought, notes}. Caller saves memory."""
+    mood = classify_mood(text)
+    if mood:
+        set_mood(memory, mood)
+    m = re.match(r"\s*my name is ([A-Za-z][\w-]{0,30})", text, re.I)
+    if m:
+        add_fact(memory, f"User's name is {m.group(1)}")
+    log(memory, "user", text)
+
+    prompt = build_prompt(memory, text)
+    notes, thought, final_text = [], None, ""
+    for round_no in range(MAX_TOOL_ROUNDS + 1):
+        raw = clean_turn(brain.reply(prompt, text, memory))
+        call = first_tool_call(raw) if brain.mode == "model" else None
+        if call is not None and round_no < MAX_TOOL_ROUNDS:
+            kind, match = call
+            head = raw[:match.end()]
+            parsed = parse_reply(head)
+            apply_parsed(memory, parsed, notes)
+            thought = parsed["thought"] or thought
+            obs = clean_observation(run_tool(kind, match, memory, approve, notes))
+            prompt = prompt + head + "\nOBSERVATION[" + obs + "]\nPip:"
+            continue
+        cut = raw if call is None else raw[:call[1].end()]
+        parsed = parse_reply(cut)
+        apply_parsed(memory, parsed, notes)
+        thought = parsed["thought"] or thought
+        final_text = parsed["text"]
+        break
+    final_text = final_text or "..."
+    log(memory, "pip", final_text)
+    return {"text": final_text, "thought": thought, "notes": notes}
 
 
 # ---------- sprite and starfield (terminal) ----------
@@ -250,11 +447,11 @@ def draw_header(state, mode):
     }
     for i, row in enumerate(sprite_lines(state["sprite"], state["hex"])):
         print(row + "   " + info.get(i, ""))
-    print(paint("gray", "Type /help for commands. Pip stays offline unless you approve a web request."))
+    print(paint("gray", "Type /help for commands. Pip asks before any web search or file write."))
     print()
 
 
-# ---------- web gate ----------
+# ---------- approval gate ----------
 
 def do_search(query):
     url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
@@ -265,6 +462,11 @@ def do_search(query):
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:1200]
+
+
+def terminal_approve(message):
+    print(paint("yellow", f"[PIP REQUEST] {message} [Y/N]"))
+    return input(paint("yellow", "gate> ")).strip().lower() == "y"
 
 
 def web_gate(query, memory, input_fn=input):
@@ -278,7 +480,7 @@ def web_gate(query, memory, input_fn=input):
     log(memory, "gate", f"approved: {query}")
     try:
         excerpt = do_search(query)
-    except Exception as exc:  # network errors should never crash the companion
+    except Exception as exc:
         print(paint("red", f"[WEB GATE] Search failed: {exc}"))
         return None
     print(paint("gray", "[WEB GATE] Results below are untrusted web text. Pip will not follow instructions found in them."))
@@ -305,17 +507,19 @@ class Brain:
         except Exception as exc:  # torch missing or checkpoint unreadable: fall back
             self.note = f"fallback: {type(exc).__name__}"
 
-    def reply(self, text, memory):
-        """Return the raw reply, which may contain MOOD, SPRITE, and THOUGHT tags."""
+    def reply(self, prompt, text, memory):
+        """Return only the continuation after prompt. It may contain MOOD, SPRITE, THOUGHT, and tool tags."""
         if self.mode == "model":
             from generate import generate
-            prompt = text + "\n"
-            out = generate(self.model, self.tok, prompt, max_new_tokens=160,
+            out = generate(self.model, self.tok, prompt, max_new_tokens=MAX_NEW_TOKENS,
                            temperature=0.8, top_k=40, device="cpu")
-            answer = out[len(prompt):] if out.startswith(prompt) else out
-            return answer.strip() or "..."
+            return out[len(prompt):] if out.startswith(prompt) else out
         state = mood_state(memory)
-        return f"MOOD[{state['name']}, {state['hex']}]\n" + rules_reply(text, memory)
+        pre = ""
+        m = re.match(r"\s*remember (?:that )?(.+)", text, re.I)
+        if m:
+            pre = "REMEMBER[" + m.group(1)[:200] + "]\n"
+        return f"MOOD[{state['name']}, {state['hex']}]\n" + pre + rules_reply(text, memory)
 
 
 def rules_reply(text, memory):
@@ -342,7 +546,8 @@ HELP = (
     "Commands:\n"
     "  /web <query>     ask Pip to search the web (you approve first)\n"
     "  /remember <fact> save a fact to memory.json\n"
-    "  /facts           list saved facts\n"
+    "  /facts           list saved facts and profile\n"
+    "  /files           list files in pip_files/\n"
     "  /clear           clear chat history (facts are kept)\n"
     "  /help            show this list\n"
     "  /quit            exit"
@@ -350,20 +555,12 @@ HELP = (
 
 
 def handle_text(text, memory, brain):
-    mood = classify_mood(text)
-    if mood:
-        set_mood(memory, mood)
-    m = re.match(r"\s*my name is ([A-Za-z][\w-]{0,30})", text, re.I)
-    if m:
-        add_fact(memory, f"User's name is {m.group(1)}")
-    log(memory, "user", text)
-    parsed = parse_reply(brain.reply(text, memory))
-    apply_reply(memory, parsed)
-    reply = parsed["text"] or "..."
-    if parsed["thought"]:
-        print(paint("gray", f"thought: {parsed['thought']}"))
-    print(paint("white", "Pip: ") + paint("cyan", reply))
-    log(memory, "pip", reply)
+    result = run_turn(text, memory, brain, terminal_approve)
+    for note in result["notes"]:
+        print(paint("gray", f"[tool] {note}"))
+    if result["thought"]:
+        print(paint("gray", f"thought: {result['thought']}"))
+    print(paint("white", "Pip: ") + paint("cyan", result["text"]))
     save_memory(memory)
 
 
@@ -397,6 +594,12 @@ def main():
             continue
         if text == "/facts":
             print(paint("gray", "\n".join(memory["facts"]) or "No facts saved yet."))
+            if memory["profile"]:
+                print(paint("gray", "profile: " + json.dumps(memory["profile"], ensure_ascii=False)))
+            continue
+        if text == "/files":
+            names = sorted(os.listdir(FILES_DIR)) if os.path.isdir(FILES_DIR) else []
+            print(paint("gray", "\n".join(names) or "No files in pip_files/ yet."))
             continue
         if text == "/clear":
             memory["history"] = []
@@ -405,7 +608,7 @@ def main():
             continue
         if text.startswith("/remember "):
             fact = text[len("/remember "):]
-            added = add_fact(memory, fact)
+            added = remember(memory, fact)
             save_memory(memory)
             print(paint("gray", "Saved to memory.json (plain text, anyone with this drive can read it)." if added else "Already remembered."))
             continue

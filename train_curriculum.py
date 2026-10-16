@@ -5,8 +5,11 @@ Stage 1: TinyStories (input.txt, from download_data.py) up to --stage1_steps (de
 Stage 2: assistant dialogue (data/assistant.txt, from make_assistant_data.py) up to --stage2_steps (default 6000).
 
 Usage: python train_curriculum.py
-Re-running continues where it stopped. A fresh start (ignoring any old checkpoint) happens only
-when checkpoints/curriculum.json does not exist yet.
+
+Existing runs: if checkpoints/pip.pt already exists from an earlier train.py run (for example a
+finished 3000-step TinyStories run), it is adopted as stage 1 progress. Nothing is restarted or
+overwritten. Stage 1 is skipped when the checkpoint is already at --stage1_steps, and stage 2 runs
+from there. A fresh start happens only when there is no checkpoint and no curriculum.json.
 
 Tokenizer: byte-level BPE trained once on the stage 1 text and stored in the checkpoint. Every byte
 has an ID, so assistant text never hits an unknown token, and stage 2 keeps the same vocabulary.
@@ -57,21 +60,27 @@ def main():
     ap.add_argument('--batch_size', type=int, default=8)
     args = ap.parse_args()
 
+    ckpt = os.path.join(ROOT, args.ckpt)
+    state_path = os.path.join(os.path.dirname(ckpt), 'curriculum.json')
+    existing = os.path.exists(ckpt)
+    fresh = False
+    if not os.path.exists(state_path):
+        os.makedirs(os.path.dirname(ckpt), exist_ok=True)
+        if existing:
+            print('found existing checkpoint ' + ckpt + ' at step ' + str(ckpt_step(ckpt)) +
+                  ': adopting it as stage 1 progress (not restarting)', flush=True)
+        else:
+            fresh = True
+            print('new curriculum: stage 1 starts from scratch', flush=True)
+        with open(state_path, 'w', encoding='utf-8') as f:
+            json.dump({'started': True}, f)
+
     if not os.path.exists(STAGE1_DATA):
         raise SystemExit('input.txt is missing. Run: python download_data.py')
     if not os.path.exists(STAGE2_DATA):
-        print('building assistant data...', flush=True)
+        print('building assistant data (make_assistant_data.py)...', flush=True)
         if run([sys.executable, os.path.join(ROOT, 'make_assistant_data.py')]) != 0:
             raise SystemExit('could not build assistant data')
-
-    ckpt = os.path.join(ROOT, args.ckpt)
-    state_path = os.path.join(os.path.dirname(ckpt), 'curriculum.json')
-    fresh = not os.path.exists(state_path)
-    if fresh:
-        os.makedirs(os.path.dirname(ckpt), exist_ok=True)
-        with open(state_path, 'w', encoding='utf-8') as f:
-            json.dump({'started': True}, f)
-        print('new curriculum: stage 1 starts from scratch (any old checkpoint is ignored)', flush=True)
 
     signal.signal(signal.SIGTERM, forward_stop)
     signal.signal(signal.SIGINT, forward_stop)
@@ -91,6 +100,8 @@ def main():
             print('stage 1 stopped at step ' + str(step) + '. Re-run python train_curriculum.py to continue.', flush=True)
             return
         print('stage 1 complete at step ' + str(step) + '.', flush=True)
+    else:
+        print('stage 1 already complete at step ' + str(step) + ': skipping to stage 2', flush=True)
 
     if step < args.stage2_steps:
         print('stage 2 (assistant dialogue): steps ' + str(step) + ' to ' + str(args.stage2_steps), flush=True)

@@ -1,17 +1,22 @@
 """Train Pip on a plain-text file: BPE tokenizer, AdamW, warmup + cosine LR, cross-entropy loss.
 
 Usage: python train.py --data input.txt --out checkpoints/pip.pt --steps 5000
-A fresh run trains the BPE tokenizer on the data. Resuming reuses the tokenizer stored in the
-checkpoint, so the token IDs stay consistent.
 
-Progress: the first 10 steps print one line each, so you see numbers right away. After that a
-line prints every --log_every steps (step, loss, lr, steps/sec, ETA). A validation pass runs every
---eval_every steps, using --eval_iters batches per split. It does NOT run at step 0 unless you
-pass --eval_at_start. All output is flushed immediately.
+AUTO-RESUME: if the --out checkpoint already exists, training continues from it automatically
+(model, optimizer, step counter, and tokenizer are all restored). Use --fresh to ignore an
+existing checkpoint and start over. --resume PATH resumes from a specific file.
+
+SAFE STOPS: on SIGTERM (for example from `kill`) or Ctrl-C, training finishes the current step,
+saves a checkpoint, and exits. Saves are written to a temp file first, so a checkpoint is never
+left half-written.
+
+Progress: the first 10 steps print one line each. After that a line prints every --log_every
+steps. A validation pass runs every --eval_every steps. All output is flushed immediately.
 """
 import argparse
 import math
 import os
+import signal
 import sys
 import time
 
@@ -20,15 +25,21 @@ import torch
 from model import PipConfig, PipLM
 from tokenizer import BPETokenizer
 
-# Line-buffer stdout so every print appears right away (also helps when piped to a log file).
 try:
     sys.stdout.reconfigure(line_buffering=True)
 except AttributeError:
     pass
 
+STOP = {"requested": False}
+
 
 def log(msg):
     print(msg, flush=True)
+
+
+def request_stop(signum, frame):
+    STOP["requested"] = True
+    log(f"\nstop signal {signum} received: finishing this step, then saving...")
 
 
 def get_device():
@@ -78,15 +89,21 @@ def fmt_time(seconds):
 
 
 def save_checkpoint(path, model, optimizer, step, tokenizer):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    """Write to a temp file, then rename, so an interrupted save never corrupts the old checkpoint."""
+    folder = os.path.dirname(path) or "."
+    os.makedirs(folder, exist_ok=True)
+    tmp = path + ".tmp"
     torch.save({
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "config": model.cfg.__dict__,
         "step": step,
         "tokenizer": tokenizer.state(),
-    }, path)
-    tokenizer.save(os.path.join(os.path.dirname(path) or ".", "tokenizer.json"))
+    }, tmp)
+    os.replace(tmp, path)
+    tok_path = os.path.join(folder, "tokenizer.json")
+    tokenizer.save(tok_path + ".tmp")
+    os.replace(tok_path + ".tmp", tok_path)
 
 
 def load_checkpoint(path, device):
@@ -101,22 +118,26 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="input.txt")
     p.add_argument("--out", default="checkpoints/pip.pt")
-    p.add_argument("--resume", default=None, help="checkpoint path to resume from")
-    p.add_argument("--steps", type=int, default=5000)
+    p.add_argument("--resume", default=None, help="resume from this checkpoint path")
+    p.add_argument("--fresh", action="store_true", help="ignore an existing --out checkpoint and start over")
+    p.add_argument("--steps", type=int, default=5000, help="total step target (not additional steps)")
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--warmup", type=int, default=200)
-    p.add_argument("--log_every", type=int, default=10, help="print a progress line every N steps (after the first 10)")
-    p.add_argument("--eval_every", type=int, default=250, help="validation pass every N steps")
-    p.add_argument("--eval_iters", type=int, default=5, help="batches per split in each validation pass")
-    p.add_argument("--eval_at_start", action="store_true", help="also run validation before step 0")
-    p.add_argument("--save_every", type=int, default=1000)
+    p.add_argument("--log_every", type=int, default=10)
+    p.add_argument("--eval_every", type=int, default=250)
+    p.add_argument("--eval_iters", type=int, default=5)
+    p.add_argument("--eval_at_start", action="store_true")
+    p.add_argument("--save_every", type=int, default=200, help="save a checkpoint every N steps")
     p.add_argument("--vocab_size", type=int, default=2048)
     p.add_argument("--n_layer", type=int, default=6)
     p.add_argument("--n_head", type=int, default=8)
     p.add_argument("--n_embd", type=int, default=352)
     p.add_argument("--block_size", type=int, default=256)
     args = p.parse_args()
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
 
     device = get_device()
     torch.manual_seed(1337)
@@ -125,14 +146,22 @@ def main():
     with open(args.data, "r", encoding="utf-8") as f:
         text = f.read()
 
+    resume_path = args.resume
+    if resume_path is None and not args.fresh and os.path.exists(args.out):
+        resume_path = args.out
+        log(f"found existing checkpoint {args.out}, resuming automatically (use --fresh to start over)")
+
     ckpt = None
     start_step = 0
-    if args.resume:
-        model, ckpt = load_checkpoint(args.resume, device)
+    if resume_path:
+        model, ckpt = load_checkpoint(resume_path, device)
         cfg = model.cfg
         tokenizer = BPETokenizer.from_state(ckpt["tokenizer"])
         start_step = ckpt["step"]
-        log(f"resumed from {args.resume} at step {start_step}")
+        log(f"resumed from {resume_path} at step {start_step}")
+        if start_step >= args.steps:
+            log(f"checkpoint is already at step {start_step} which is >= --steps {args.steps}. "
+                f"Raise --steps to train further.")
     else:
         log("training BPE tokenizer (this can take a few minutes on a large file, no progress shown)...")
         t_tok = time.time()
@@ -157,53 +186,63 @@ def main():
     t0 = time.time()
     run_loss = None
     last_log_time, last_log_step = t0, start_step
+    done = start_step
 
     if args.eval_at_start:
-        log(f"running validation before step 0 ({args.eval_iters} batches per split)...")
+        log(f"running validation before step {start_step} ({args.eval_iters} batches per split)...")
         losses = estimate_loss(model, splits, cfg, args.batch_size, device, args.eval_iters)
         log(f"[eval] step {start_step}: train {losses['train']:.4f} val {losses['val']:.4f}")
 
     log("starting training loop, first progress line in a few seconds...")
-    for step in range(start_step, args.steps):
-        lr = lr_at(step, args)
-        for g in optimizer.param_groups:
-            g["lr"] = lr
+    try:
+        for step in range(start_step, args.steps):
+            if STOP["requested"]:
+                break
+            lr = lr_at(step, args)
+            for g in optimizer.param_groups:
+                g["lr"] = lr
 
-        x, y = get_batch(splits["train"], cfg.block_size, args.batch_size, device)
-        _, loss = model(x, y)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+            x, y = get_batch(splits["train"], cfg.block_size, args.batch_size, device)
+            _, loss = model(x, y)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
 
-        lv = loss.item()
-        run_loss = lv if run_loss is None else 0.9 * run_loss + 0.1 * lv
+            lv = loss.item()
+            run_loss = lv if run_loss is None else 0.9 * run_loss + 0.1 * lv
+            done = step + 1
 
-        done = step + 1
-        show_now = done <= 10 or done % args.log_every == 0 or done == args.steps
-        if show_now:
-            now = time.time()
-            span = max(now - last_log_time, 1e-9)
-            sps = (done - last_log_step) / span
-            remaining = (args.steps - done) / sps if sps > 0 else 0
-            pct = 100.0 * done / args.steps
-            log(f"step {done:>6}/{args.steps} ({pct:5.1f}%) | loss {lv:.4f} | smooth {run_loss:.4f} | "
-                f"lr {lr:.2e} | {sps:6.2f} steps/s | elapsed {fmt_time(now - t0)} | eta {fmt_time(remaining)}")
-            last_log_time, last_log_step = now, done
+            show_now = done <= 10 or done % args.log_every == 0 or done == args.steps
+            if show_now:
+                now = time.time()
+                span = max(now - last_log_time, 1e-9)
+                sps = (done - last_log_step) / span
+                remaining = (args.steps - done) / sps if sps > 0 else 0
+                pct = 100.0 * done / args.steps
+                log(f"step {done:>6}/{args.steps} ({pct:5.1f}%) | loss {lv:.4f} | smooth {run_loss:.4f} | "
+                    f"lr {lr:.2e} | {sps:6.2f} steps/s | elapsed {fmt_time(now - t0)} | eta {fmt_time(remaining)}")
+                last_log_time, last_log_step = now, done
 
-        if done % args.eval_every == 0 or done == args.steps:
-            log(f"running validation at step {done} ({args.eval_iters} batches per split, may take a moment)...")
-            losses = estimate_loss(model, splits, cfg, args.batch_size, device, args.eval_iters)
-            log(f"[eval] step {done}/{args.steps}: train {losses['train']:.4f} val {losses['val']:.4f} "
-                f"elapsed {fmt_time(time.time() - t0)}")
-            last_log_time, last_log_step = time.time(), done
+            if done % args.eval_every == 0 or done == args.steps:
+                log(f"running validation at step {done} ({args.eval_iters} batches per split, may take a moment)...")
+                losses = estimate_loss(model, splits, cfg, args.batch_size, device, args.eval_iters)
+                log(f"[eval] step {done}/{args.steps}: train {losses['train']:.4f} val {losses['val']:.4f} "
+                    f"elapsed {fmt_time(time.time() - t0)}")
+                last_log_time, last_log_step = time.time(), done
 
-        if done % args.save_every == 0:
-            save_checkpoint(args.out, model, optimizer, done, tokenizer)
-            log(f"checkpoint saved at step {done} -> {args.out}")
+            if done % args.save_every == 0:
+                save_checkpoint(args.out, model, optimizer, done, tokenizer)
+                log(f"checkpoint saved at step {done} -> {args.out}")
+    except KeyboardInterrupt:
+        STOP["requested"] = True
 
-    save_checkpoint(args.out, model, optimizer, args.steps, tokenizer)
-    log(f"saved {args.out}")
+    # Always save the last completed step, whether we finished, were stopped, or were interrupted.
+    save_checkpoint(args.out, model, optimizer, done, tokenizer)
+    if STOP["requested"]:
+        log(f"stopped at step {done}. checkpoint saved to {args.out}. Re-run the same command to continue.")
+    else:
+        log(f"finished at step {done}. saved {args.out}")
 
 
 if __name__ == "__main__":

@@ -484,15 +484,48 @@ def fallback_reply(text, memory):
     return "I lost my words on that one. Could you ask again, or rephrase it?"
 
 
+NAME_SET_RE = re.compile(r"^\s*(?:my name is|my name's|call me)\s+([A-Za-z][\w-]{0,30})", re.I)
+NAME_QUERY_RE = re.compile(r"^\s*(?:what(?:[\u2019']s| is) my name|who am i|do you know my name)\s*[?.!]*\s*$", re.I)
+
+
+def known_name(memory):
+    """The user's name from the profile or saved facts, or None."""
+    name = (memory.get("profile") or {}).get("name")
+    if name:
+        return name
+    for fact in memory.get("facts", []):
+        m = re.match(r"User's name is ([A-Za-z][\w-]{0,30})$", fact)
+        if m:
+            return m.group(1)
+    return None
+
+
+def answer_name_query(text, memory):
+    """Answer a question about the user's name straight from memory. None if text is not such a question."""
+    if not NAME_QUERY_RE.match(text):
+        return None
+    name = known_name(memory)
+    if name:
+        return "You told me your name is " + name + "."
+    return "I do not know your name yet. What should I call you?"
+
+
 def run_turn(text, memory, brain, approve):
     """Handle one user message. Returns {text, thought, notes}. Caller saves memory."""
     mood = classify_mood(text)
     if mood:
         set_mood(memory, mood)
-    m = re.match(r"\s*my name is ([A-Za-z][\w-]{0,30})", text, re.I)
+    m = NAME_SET_RE.match(text)
     if m:
-        add_fact(memory, f"User's name is {m.group(1)}")
+        name = m.group(1)
+        add_fact(memory, f"User's name is {name}")
+        memory.setdefault("profile", {})["name"] = name[:40]
     log(memory, "user", text)
+
+    direct = answer_name_query(text, memory)
+    if direct is not None:
+        log(memory, "pip", direct)
+        return {"text": direct, "thought": "They asked for their name. Answer from memory.", "notes": []}
 
     prompt = build_prompt(memory, text)
     notes, thought, final_text = [], None, ""
@@ -561,15 +594,69 @@ def draw_header(state, mode):
 
 # ---------- approval gate ----------
 
-def do_search(query):
-    url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 PipCompanion"})
+SEARCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0 PipCompanion/1.0",
+    "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+CAPTCHA_RE = re.compile(r"captcha|anomaly-modal|unusual traffic", re.I)
+
+
+def _http_get(url):
+    req = urllib.request.Request(url, headers=SEARCH_HEADERS)
     with urllib.request.urlopen(req, timeout=10) as resp:
-        html = resp.read().decode("utf-8", errors="replace")
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def _strip_html(html):
     text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:1200]
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _search_ddg_lite(query):
+    html = _http_get("https://lite.duckduckgo.com/lite/?" + urllib.parse.urlencode({"q": query}))
+    if CAPTCHA_RE.search(html):
+        return ""  # bot challenge page, not results
+    return _strip_html(html)
+
+
+def _search_ddg_instant(query):
+    data = json.loads(_http_get("https://api.duckduckgo.com/?" + urllib.parse.urlencode(
+        {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"})))
+    parts = [data.get("AbstractText") or "", data.get("Answer") or ""]
+    for topic in (data.get("RelatedTopics") or [])[:5]:
+        if isinstance(topic, dict) and topic.get("Text"):
+            parts.append(topic["Text"])
+    return " ".join(p for p in parts if p).strip()
+
+
+def _search_wikipedia(query):
+    url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
+        {"action": "opensearch", "search": query, "limit": 3, "namespace": 0, "format": "json"})
+    data = json.loads(_http_get(url))
+    titles, links = data[1], data[3]
+    return "; ".join(t + " (" + l + ")" for t, l in zip(titles, links))
+
+
+SEARCH_BACKENDS = [("duckduckgo-lite", _search_ddg_lite),
+                   ("duckduckgo-instant", _search_ddg_instant),
+                   ("wikipedia", _search_wikipedia)]
+
+
+def do_search(query):
+    """Try each backend in turn. Captcha or empty results move on to the next one."""
+    errors = []
+    for name, backend in SEARCH_BACKENDS:
+        try:
+            text = backend(query)
+        except Exception as exc:  # blocked, timed out, or bad JSON: try the next backend
+            errors.append(name + ": " + type(exc).__name__)
+            continue
+        if text:
+            return "[" + name + "] " + text[:1200]
+        errors.append(name + ": no usable results")
+    raise RuntimeError("; ".join(errors))
 
 
 def terminal_approve(message):

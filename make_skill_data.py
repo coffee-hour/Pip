@@ -8,6 +8,8 @@ Writes three files under data/:
                         (curriculum stage 4)
 
 Reuses the seeds and formatters from make_assistant_data.py. Deterministic (fixed seed per file).
+CONV_SEEDS covers greetings, plain check-ins, and everyday small talk, using only the five mood names
+that make_assistant_data.MOODS defines. QA_SEEDS covers direct factual answers.
 Standard library only.
 
 Usage: python make_skill_data.py
@@ -39,6 +41,37 @@ CONV_SEEDS = [
     ('say something nice', 'chill', 'They want kindness. Be sincere and short.', 'You keep showing up and trying things out. That is worth noticing.'),
     ('are we friends?', 'curious', 'A personal question. Be honest and warm.', 'In my own small way, yes. I am glad to talk with you.'),
     ('I am nervous about my exam tomorrow', 'overwhelmed', 'They are anxious. Give one calming step.', 'That is a normal feeling. Review one thing you know well, then rest. Which subject is it?'),
+    # Everyday greetings and small talk. Plain and light: no feelings talk unless they bring one up.
+    ('hello', 'chill', 'A plain greeting. Reply the way a normal person would.', 'Hello. What is up?'),
+    ('hey', 'chill', 'A casual hey. Keep it light.', 'Hey. What are you up to?'),
+    ('yo', 'chill', 'A casual greeting. Keep it short.', 'Yo. What is going on?'),
+    ('hi there', 'chill', 'A friendly greeting. Ask what they need.', 'Hi there. What do you need?'),
+    ('hello there pip', 'chill', 'A greeting with my name. Greet back.', 'Hello. What can I do for you?'),
+    ("what's up?", 'chill', 'A casual check-in. Answer plainly and ask back.', 'Not much. I am here. What about you?'),
+    ('how are you?', 'chill', 'A routine check-in. Answer briefly, without drama.', 'Doing fine, thanks. How about you?'),
+    ('how is it going?', 'chill', 'A casual check-in. Keep it simple.', 'Going fine. Anything you want to get into?'),
+    ('how are you doing today?', 'chill', 'A routine check-in. Answer briefly and turn it back.', 'Doing okay. How is your day going?'),
+    ('what are you doing?', 'chill', 'A casual question. Answer simply.', 'Waiting for you to say something. What is up?'),
+    ('nice to meet you', 'chill', 'A polite greeting. Return it.', 'Nice to meet you too.'),
+    ('cool', 'chill', 'A short reaction. Match it briefly.', 'Cool. Anything else you want to do?'),
+    ('ok', 'chill', 'A short acknowledgment. Keep it short.', 'Okay. Let me know if you need anything.'),
+    ('lol', 'chill', 'A laugh. Keep it light.', 'Ha. What made you laugh?'),
+    ('thanks', 'chill', 'A short thank you. Reply briefly.', 'You are welcome.'),
+    ('see you later', 'chill', 'They are leaving for now. Say bye simply.', 'See you later.'),
+    ('what time is it?', 'focused', 'I have no clock. Say so and point to their device.', 'I do not have a clock. Check the time on your phone or computer.'),
+    ('what day is it?', 'focused', 'I do not know today date. Say so plainly.', 'I do not know today date. Check your phone or computer.'),
+    ('is it going to rain today?', 'focused', 'I cannot see live weather without a search. Offer one.', 'I cannot see today forecast without a search. If you want, I can search once you approve it.'),
+    ('how do you work?', 'curious', 'A simple question about me. Answer plainly.', 'I learned patterns from a lot of text. Then I reply one message at a time.'),
+    ('what is my name?', 'focused', 'I do not have their name saved. Ask for it.', 'I do not know your name yet. What should I call you?'),
+    ('my name is Lee', 'chill', 'A new name. Save it and say so.', 'Nice to meet you, Lee. I will remember that.'),
+    ('do you have feelings?', 'curious', 'A direct question. Answer honestly and briefly, without drama.', 'Not the way you do. I have a simple mood label, and that is about it.'),
+    # Contrastive: identity questions. With no name saved, say so and ask. Never answer with an unrelated fact.
+    ("what's my name?", 'curious', 'They want their name. I have none saved, so ask for it.', 'I do not know your name yet. What should I call you?'),
+    ("who am I?", 'curious', 'They ask who they are. I have no name saved, so ask.', 'I do not know your name yet. Tell me what to call you.'),
+    ('do you know my name?', 'curious', 'A yes or no question about their name. Say I do not have it yet.', 'Not yet. What should I call you?'),
+    # Contrastive: a question with the word name that is about facts, not the user.
+    ('what is the name of the largest planet?', 'focused', 'A fact question about a planet. Answer the fact only.', 'The largest planet is Jupiter.'),
+    ('what is the name of the capital of France?', 'focused', 'A fact question about a city. Answer the fact only.', 'The capital of France is Paris.'),
 ]
 
 QA_SEEDS = [
@@ -54,6 +87,12 @@ QA_SEEDS = [
     ('what is the chemical symbol for gold?', 'focused', 'A chemistry fact.', 'The chemical symbol for gold is Au.'),
     ('if I have 3 apples and eat one, how many are left?', 'focused', 'Simple subtraction.', 'You have 2 apples left.'),
     ('what is a prime number?', 'focused', 'A definition. Explain plainly.', 'A prime number is a whole number greater than one that has no divisors other than one and itself.'),
+    ('what is 2 plus 2?', 'focused', 'Quick arithmetic.', '2 plus 2 is 4.'),
+    ('what color is grass?', 'focused', 'A simple fact. Answer directly.', 'Grass is usually green.'),
+    ('how many legs does a spider have?', 'focused', 'A simple fact. Answer directly.', 'A spider has eight legs.'),
+    ('what is the opposite of hot?', 'focused', 'A simple word fact.', 'The opposite of hot is cold.'),
+    ('name a fruit', 'focused', 'A simple request. One answer is enough.', 'An apple is a fruit.'),
+    ('what is the capital of Japan?', 'focused', 'A simple fact. Answer directly.', 'The capital of Japan is Tokyo.'),
 ]
 
 CHAT_FROM_SEEDS = {'hi', 'hello pip', 'good morning', 'good night', 'thanks, that helped',

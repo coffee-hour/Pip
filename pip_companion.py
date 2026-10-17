@@ -60,7 +60,7 @@ MAX_DOC_FILES = 50
 MAX_DOC_READ = 200000        # bytes of each doc read at most
 MAX_DOC_CHUNK = 400          # characters per snippet
 MAX_TOOL_ROUNDS = 2
-MAX_NEW_TOKENS = 120
+MAX_NEW_TOKENS = 320  # room for MOOD, THOUGHT, a 12-row SPRITE, and the reply text
 MAX_FILE_CHARS = 4000
 MAX_OBS_CHARS = 700
 FILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,58}\.[A-Za-z0-9]{1,8}$")
@@ -309,6 +309,21 @@ def parse_sprite(body):
     return out
 
 
+TAG_SPRITE_OPEN = re.compile(r"SPRITE\s*\[.*\Z", re.I | re.S)  # unclosed SPRITE[ block, cut to end
+SPRITE_ROW_RE = re.compile(r"^[\s.#]{12,}$")                    # bare sprite rows, with or without the tag
+
+
+def strip_sprite_leftovers(text):
+    """Remove an unclosed SPRITE[ block and any stray sprite-only rows from the reply text."""
+    text = TAG_SPRITE_OPEN.sub("", text)
+    kept = []
+    for line in text.split("\n"):
+        if (SPRITE_ROW_RE.match(line) and "#" in line) or line.strip() in ("]", "["):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def parse_reply(raw):
     raw = raw or ""
     mood = None
@@ -332,6 +347,7 @@ def parse_reply(raw):
     for pattern in (TAG_MOOD, TAG_SPRITE, TAG_THOUGHT, TAG_REMEMBER, TAG_SEARCH, TAG_READ, TAG_WRITE,
                     TAG_KNOWLEDGE, TAG_OBS):
         text = pattern.sub("", text)
+    text = strip_sprite_leftovers(text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return {"text": text, "mood": mood, "sprite": sprite, "thought": thought, "remember": remember_values}
 
@@ -461,6 +477,13 @@ def apply_parsed(memory, parsed, notes):
             notes.append("remembered: " + value[:120])
 
 
+def fallback_reply(text, memory):
+    """Used when the model produced no reply text (for example it only emitted a sprite)."""
+    if memory.get("mood", DEFAULT_MOOD) == "overwhelmed":
+        return "That got tangled for me. Could you ask again in a shorter way?"
+    return "I lost my words on that one. Could you ask again, or rephrase it?"
+
+
 def run_turn(text, memory, brain, approve):
     """Handle one user message. Returns {text, thought, notes}. Caller saves memory."""
     mood = classify_mood(text)
@@ -491,7 +514,7 @@ def run_turn(text, memory, brain, approve):
         thought = parsed["thought"] or thought
         final_text = parsed["text"]
         break
-    final_text = final_text or "..."
+    final_text = final_text or fallback_reply(text, memory)
     log(memory, "pip", final_text)
     return {"text": final_text, "thought": thought, "notes": notes}
 

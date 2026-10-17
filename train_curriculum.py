@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Curriculum for Pip: a fixed step plan of about five hours of CPU training.
+"""Curriculum for Pip-Medium (about 26.5M parameters): a fixed step plan of CPU training.
 
 Stage 1: TinyStories (input.txt, from download_data.py) up to --stage1_steps (default 3000).
 Stage 2: conversation and personality (data/conversation.txt) up to step 5000.
@@ -12,19 +12,14 @@ Pass --rebuild_data to regenerate them. The generator is deterministic, so this 
 Usage: python train_curriculum.py
        python train_curriculum.py --train_args "--bf16 --threads 4"   (extra flags for train.py)
 
-Existing runs: if checkpoints/pip.pt already exists from an earlier train.py run, it is adopted as
-stage 1 progress. Nothing is restarted or overwritten. Each stage starts from the step the checkpoint
-is at, so a run that stopped at step 3000 picks up stage 2 right there. A fresh start happens only
-when there is no checkpoint and no curriculum.json.
+CLEAN START FOR PIP-MEDIUM: an existing checkpoint whose architecture does not match Pip-Medium
+(8 layers, 8 heads, width 512, context 512), such as the old 9.7M Pip, is NOT loaded. It is renamed
+to <name>.legacy.pt so nothing is lost, the old curriculum.json is removed, and training starts from
+scratch with a freshly trained tokenizer. A checkpoint that already matches is adopted as stage 1
+progress, as before, so an interrupted Pip-Medium run resumes where it stopped.
 
 Schedule: each stage calls train.py with --steps set to that stage's end step. The cosine learning
 rate decays toward that end step, so it restarts from wherever it is at the stage boundary.
-
-Time: the plan is fixed in steps, not hours. At about 20 to 25 steps per minute on CPU, the 7000
-steps from 3000 to 10000 take roughly 4.7 to 5.8 hours. Measure the real rate on your machine.
-
-Tokenizer: byte-level BPE trained once on the stage 1 text and stored in the checkpoint. Stages 2 to 4
-keep the same vocabulary.
 
 Stop: SIGTERM or Ctrl-C is forwarded to train.py, which saves and exits. Re-run to continue.
 """
@@ -41,6 +36,8 @@ import torch
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STAGE1_DATA = os.path.join(ROOT, 'input.txt')
 DATA_DIR = os.path.join(ROOT, 'data')
+
+MEDIUM = {'n_layer': 8, 'n_head': 8, 'n_embd': 512, 'block_size': 512}
 
 # (name, dataset file under data/, end step)
 SKILL_STAGES = [
@@ -60,10 +57,20 @@ def forward_stop(signum, frame):
     print('stop requested: waiting for train.py to save...', flush=True)
 
 
+def load_meta(path):
+    return torch.load(path, map_location='cpu')
+
+
 def ckpt_step(path):
     if not os.path.exists(path):
         return 0
-    return int(torch.load(path, map_location='cpu')['step'])
+    return int(load_meta(path)['step'])
+
+
+def is_medium(path):
+    """True when the checkpoint architecture matches Pip-Medium exactly."""
+    cfg = load_meta(path).get('config', {})
+    return all(cfg.get(k) == v for k, v in MEDIUM.items())
 
 
 def run(cmd):
@@ -82,7 +89,7 @@ def build_skill_data(rebuild):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Pip skill curriculum runner')
+    ap = argparse.ArgumentParser(description='Pip-Medium skill curriculum runner')
     ap.add_argument('--ckpt', default=os.path.join('checkpoints', 'pip.pt'))
     ap.add_argument('--stage1_steps', type=int, default=3000)
     ap.add_argument('--batch_size', type=int, default=8)
@@ -97,18 +104,26 @@ def main():
 
     ckpt = os.path.join(ROOT, args.ckpt)
     state_path = os.path.join(os.path.dirname(ckpt), 'curriculum.json')
-    existing = os.path.exists(ckpt)
+    os.makedirs(os.path.dirname(ckpt), exist_ok=True)
+
     fresh = False
+    if os.path.exists(ckpt) and not is_medium(ckpt):
+        legacy = ckpt[:-3] + '.legacy.pt' if ckpt.endswith('.pt') else ckpt + '.legacy'
+        os.replace(ckpt, legacy)
+        print('found a checkpoint that is not Pip-Medium: moved to ' + legacy +
+              '. Starting Pip-Medium from scratch.', flush=True)
+        if os.path.exists(state_path):
+            os.remove(state_path)
+
     if not os.path.exists(state_path):
-        os.makedirs(os.path.dirname(ckpt), exist_ok=True)
-        if existing:
-            print('found existing checkpoint ' + ckpt + ' at step ' + str(ckpt_step(ckpt)) +
+        if os.path.exists(ckpt):
+            print('found Pip-Medium checkpoint ' + ckpt + ' at step ' + str(ckpt_step(ckpt)) +
                   ': adopting it as stage 1 progress (not restarting)', flush=True)
         else:
             fresh = True
-            print('new curriculum: stage 1 starts from scratch', flush=True)
+            print('new curriculum: Pip-Medium stage 1 starts from scratch', flush=True)
         with open(state_path, 'w', encoding='utf-8') as f:
-            json.dump({'started': True}, f)
+            json.dump({'started': True, 'model': MEDIUM}, f)
 
     if not os.path.exists(STAGE1_DATA):
         raise SystemExit('input.txt is missing. Run: python download_data.py')

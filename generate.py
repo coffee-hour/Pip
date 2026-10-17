@@ -7,6 +7,9 @@ KV cache (default): the prompt is run once, then each new token is one forward s
 the stored keys and values. When the context fills the block size, the window is re-run over the
 last block_size tokens, which is exactly what the full path does, so the output matches it.
 
+Stop: generation ends early when the new text contains a stop string (default "\nUser:"), so the
+model does not keep writing turns after its own reply. The stop string is cut from the output.
+
 Loads both float checkpoints (from train.py) and int8 checkpoints (from quantize.py).
 """
 import argparse
@@ -16,6 +19,8 @@ import torch.nn.functional as F
 
 from model import PipConfig, PipLM
 from tokenizer import BPETokenizer
+
+DEFAULT_STOP = ("\nUser:",)
 
 
 def load_model(ckpt_path, device="cpu"):
@@ -40,23 +45,35 @@ def _sample(logits, temperature, top_k):
     return int(torch.multinomial(probs, num_samples=1).item())
 
 
+def _hit_stop(tok, new_ids, stops):
+    """True when the generated text so far contains any stop string."""
+    if not stops or not new_ids:
+        return False
+    text = tok.decode(new_ids)
+    return any(s in text for s in stops)
+
+
 @torch.no_grad()
-def _generate_full(model, tok, ids, max_new_tokens, temperature, top_k, device):
+def _generate_full(model, tok, ids, max_new_tokens, temperature, top_k, device, stops):
     """Original path: re-runs the whole (cropped) context for every new token."""
     idx = torch.tensor([ids], dtype=torch.long, device=device)
+    n0 = len(ids)
     for _ in range(max_new_tokens):
         idx_cond = idx[:, -model.cfg.block_size:]
         logits, _ = model(idx_cond)
         next_id = _sample(logits, temperature, top_k)
         idx = torch.cat([idx, torch.tensor([[next_id]], dtype=torch.long, device=device)], dim=1)
+        if _hit_stop(tok, idx[0, n0:].tolist(), stops):
+            break
     return idx[0].tolist()
 
 
 @torch.no_grad()
-def _generate_cached(model, tok, ids, max_new_tokens, temperature, top_k, device):
+def _generate_cached(model, tok, ids, max_new_tokens, temperature, top_k, device, stops):
     """KV cache path. Invariant: past holds keys/values for out[:-1] after each sample."""
     bs = model.cfg.block_size
     out = list(ids)
+    n0 = len(ids)
     past = None
     L = 0  # number of positions held in past
     for _ in range(max_new_tokens):
@@ -70,17 +87,38 @@ def _generate_cached(model, tok, ids, max_new_tokens, temperature, top_k, device
             logits, _, past = model(x, past=past, use_cache=True, pos_offset=L)
             L += 1
         out.append(_sample(logits, temperature, top_k))
+        if _hit_stop(tok, out[n0:], stops):
+            break
     return out
 
 
+def _cut_at_stop(text, stops):
+    """Remove everything from the first stop string onward."""
+    cut = len(text)
+    for s in stops:
+        i = text.find(s)
+        if i != -1:
+            cut = min(cut, i)
+    return text[:cut]
+
+
 def generate(model, tok, prompt="", max_new_tokens=200, temperature=0.8, top_k=40, device="cpu",
-             use_cache=True):
+             use_cache=True, stop=DEFAULT_STOP):
     ids = tok.encode(prompt) or [0]
+    stops = tuple(stop or ())
     if use_cache:
-        out = _generate_cached(model, tok, ids, max_new_tokens, temperature, top_k, device)
+        out = _generate_cached(model, tok, ids, max_new_tokens, temperature, top_k, device, stops)
     else:
-        out = _generate_full(model, tok, ids, max_new_tokens, temperature, top_k, device)
-    return tok.decode(out)
+        out = _generate_full(model, tok, ids, max_new_tokens, temperature, top_k, device, stops)
+    text = tok.decode(out)
+    if stops:
+        # keep the prompt intact; only the generated part is cut at the stop string
+        head = tok.decode(ids)
+        if text.startswith(head):
+            text = head + _cut_at_stop(text[len(head):], stops)
+        else:
+            text = _cut_at_stop(text, stops)
+    return text
 
 
 if __name__ == "__main__":

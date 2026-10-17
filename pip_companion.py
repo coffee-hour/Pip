@@ -25,7 +25,9 @@ added after them as DOCS: [...], also within a budget. Nothing leaves the machin
 Vault: an optional master passphrase (vault.py) is asked for before memory loads. /lock locks the
 session and asks again. /password sets, changes, or removes it. The lock does not encrypt files on disk.
 
-Usage: python pip_companion.py [--ckpt checkpoints/pip.pt] [--no-color]
+Usage: python pip_companion.py [--ckpt PATH] [--no-color]
+With no --ckpt, Pip uses checkpoints/smollm2 if that folder exists, otherwise it boots
+HuggingFaceTB/SmolLM2-135M-Instruct from the Hugging Face hub. Plain `python pip_companion.py` is enough.
 Commands: /web <query>, /docs <query>, /remember <fact>, /facts, /files, /lock, /password, /clear,
           /help, /quit
 """
@@ -46,7 +48,8 @@ import vault
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MEMORY_PATH = os.path.join(ROOT, "memory.json")
 FILES_DIR = os.path.join(ROOT, "pip_files")
-DEFAULT_CKPT = os.path.join(ROOT, "checkpoints", "pip.pt")
+LOCAL_SMOL_DIR = os.path.join(ROOT, "checkpoints", "smollm2")
+DEFAULT_HF_MODEL = "HuggingFaceTB/SmolLM2-135M-Instruct"
 HISTORY_LIMIT = 200
 
 SPRITE_SIZE = 12
@@ -769,21 +772,39 @@ def lock_session():
 
 # ---------- brain: checkpoint if available, rules otherwise ----------
 
+def resolve_model_source(ckpt_arg):
+    """Explicit --ckpt wins. Otherwise a local SmolLM2 folder, otherwise the Hugging Face model id."""
+    if ckpt_arg:
+        return ckpt_arg
+    if os.path.isdir(LOCAL_SMOL_DIR) and os.path.exists(os.path.join(LOCAL_SMOL_DIR, "config.json")):
+        return LOCAL_SMOL_DIR
+    return DEFAULT_HF_MODEL
+
+
 class Brain:
     def __init__(self, ckpt_path):
         self.model = None
         self.tok = None
         self.mode = "rules"
         self.note = ""
-        if not os.path.exists(ckpt_path):
+        is_hub_id = (not os.path.exists(ckpt_path) and "/" in ckpt_path and not ckpt_path.startswith((".", "/"))
+                   and not ckpt_path.endswith((".pt", ".bin", ".safetensors")))
+        if not os.path.exists(ckpt_path) and not is_hub_id:
             self.note = "no checkpoint yet"
             return
         try:
             sys.path.insert(0, ROOT)
-            from generate import load_model
-            self.model, self.tok = load_model(ckpt_path, "cpu")
+            if is_hub_id:
+                # Hugging Face model id: load with transformers (downloads once, then cached).
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+                self.tok = AutoTokenizer.from_pretrained(ckpt_path)
+                self.model = AutoModelForCausalLM.from_pretrained(ckpt_path, torch_dtype="auto")
+                self.model.eval()
+            else:
+                from generate import load_model
+                self.model, self.tok = load_model(ckpt_path, "cpu")
             self.mode = "model"
-        except Exception as exc:  # torch missing or checkpoint unreadable: fall back
+        except Exception as exc:  # torch/transformers missing, offline, or checkpoint unreadable: fall back
             self.note = f"fallback: {type(exc).__name__}"
 
     def reply(self, prompt, text, memory):
@@ -849,7 +870,7 @@ def handle_text(text, memory, brain):
 def main():
     global USE_COLOR
     ap = argparse.ArgumentParser(description="Pip companion terminal interface")
-    ap.add_argument("--ckpt", default=DEFAULT_CKPT)
+    ap.add_argument("--ckpt", default=None, help="local checkpoint or folder; default is SmolLM2")
     ap.add_argument("--no-color", action="store_true")
     args = ap.parse_args()
     USE_COLOR = not args.no_color
@@ -863,7 +884,7 @@ def main():
         first_run_setup()
 
     memory = load_memory()
-    brain = Brain(args.ckpt)
+    brain = Brain(resolve_model_source(args.ckpt))
     clear_screen()
     draw_header(mood_state(memory), brain.mode)
     if brain.note:

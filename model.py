@@ -1,8 +1,8 @@
 """Pip: a decoder-only transformer language model written from scratch in PyTorch.
 
-Default config is about 9.7M parameters: vocab 2048, 6 layers, 8 heads, width 352, context 256.
-The small vocabulary keeps the embedding table (2048 x 352 = 0.72M, tied with the output head)
-small, so most parameters sit in the transformer blocks where they help learning.
+Default config is Pip-Medium, about 26.5M parameters: vocab 2048, 8 layers, 8 heads (head_dim 64),
+width 512, context 512. The feed-forward width is 4 x 512 = 2048 (GELU). The embedding table
+(2048 x 512, tied with the output head) is about 1.05M; the transformer blocks hold most of the rest.
 
 KV cache: forward() takes an optional past (one (k, v) pair per layer) and use_cache flag. With
 use_cache=False (the default) the call and its return value are the same as before, so training
@@ -20,10 +20,10 @@ import torch.nn.functional as F
 @dataclass
 class PipConfig:
     vocab_size: int = 2048     # byte-level BPE vocabulary (256 bytes + merges)
-    block_size: int = 256      # context length
-    n_layer: int = 6
-    n_head: int = 8
-    n_embd: int = 352          # must be divisible by n_head
+    block_size: int = 512      # context length (Pip-Medium)
+    n_layer: int = 8           # Pip-Medium depth
+    n_head: int = 8            # head_dim = n_embd / n_head = 64
+    n_embd: int = 512          # width (Pip-Medium); must be divisible by n_head
     dropout: float = 0.1
     bias: bool = False
 

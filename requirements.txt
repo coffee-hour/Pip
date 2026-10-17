@@ -1,3 +1,5 @@
 # torch is installed by setup.sh from the CPU-only PyTorch index. Listed here so pip treats it as satisfied.
 torch>=2.1
 numpy>=1.24
+# SmolLM2-135M backend (train_smol.py and HF checkpoint folders). Pure CPU, no accelerate needed.
+transformers>=4.44

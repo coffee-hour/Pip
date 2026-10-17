@@ -2,6 +2,7 @@
 
 Usage: python generate.py --ckpt checkpoints/pip.pt --prompt "Once" --max_new_tokens 300
        add --no_cache to use the original full-recompute path (the fallback)
+       python generate.py --ckpt checkpoints/smollm2 --prompt "Hi Pip"   (fine-tuned SmolLM2 folder)
 
 KV cache (default): the prompt is run once, then each new token is one forward step that reuses
 the stored keys and values. When the context fills the block size, the window is re-run over the
@@ -11,8 +12,13 @@ Stop: generation ends early when the new text contains a stop string (default "\
 model does not keep writing turns after its own reply. The stop string is cut from the output.
 
 Loads both float checkpoints (from train.py) and int8 checkpoints (from quantize.py).
+
+SmolLM2 backend: if --ckpt is a directory containing config.json (a Hugging Face model folder
+written by train_smol.py), it is loaded with transformers on CPU instead. The scratch PipLM path
+is untouched. The HF path returns the same shape as the Pip path: prompt followed by the new text.
 """
 import argparse
+import os
 
 import torch
 import torch.nn.functional as F
@@ -23,7 +29,17 @@ from tokenizer import BPETokenizer
 DEFAULT_STOP = ("\nUser:",)
 
 
+def is_hf_dir(path):
+    return os.path.isdir(path) and os.path.exists(os.path.join(path, "config.json"))
+
+
 def load_model(ckpt_path, device="cpu"):
+    if is_hf_dir(ckpt_path):
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(ckpt_path)
+        model = AutoModelForCausalLM.from_pretrained(ckpt_path, torch_dtype=torch.float32).to(device)
+        model.eval()
+        return model, tok
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     if ckpt.get("format") == "int8-dynamic":
         model = ckpt["quantized_model"]
@@ -102,10 +118,26 @@ def _cut_at_stop(text, stops):
     return text[:cut]
 
 
+@torch.no_grad()
+def _generate_hf(model, tok, prompt, max_new_tokens, temperature, top_k, device, stops):
+    """SmolLM2 / transformers path. Returns prompt + new text, cut at the first stop string."""
+    enc = tok(prompt, return_tensors="pt").to(device)
+    pad = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
+    kwargs = dict(max_new_tokens=max_new_tokens, do_sample=True, temperature=max(temperature, 1e-8),
+                  top_k=top_k if top_k and top_k > 0 else None, pad_token_id=pad)
+    if stops:
+        kwargs.update(stop_strings=list(stops), tokenizer=tok)
+    out = model.generate(**enc, **kwargs)
+    new_text = tok.decode(out[0, enc["input_ids"].shape[1]:], skip_special_tokens=True)
+    return prompt + _cut_at_stop(new_text, stops)
+
+
 def generate(model, tok, prompt="", max_new_tokens=200, temperature=0.8, top_k=40, device="cpu",
              use_cache=True, stop=DEFAULT_STOP):
-    ids = tok.encode(prompt) or [0]
     stops = tuple(stop or ())
+    if not isinstance(model, PipLM):
+        return _generate_hf(model, tok, prompt, max_new_tokens, temperature, top_k, device, stops)
+    ids = tok.encode(prompt) or [0]
     if use_cache:
         out = _generate_cached(model, tok, ids, max_new_tokens, temperature, top_k, device, stops)
     else:

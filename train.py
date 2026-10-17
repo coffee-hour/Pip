@@ -1,16 +1,24 @@
 """Train Pip on a plain-text file: BPE tokenizer, AdamW, warmup + cosine LR, cross-entropy loss.
 
+Default model is Pip-Medium (about 26.5M parameters): 8 layers, 8 heads, width 512, context 512.
+
 Usage: python train.py --data input.txt --out checkpoints/pip.pt --steps 5000
 
 AUTO-RESUME: if the --out checkpoint already exists, training continues from it automatically
 (model, optimizer, step counter, and tokenizer are all restored). Use --fresh to ignore an
-existing checkpoint and start over. --resume PATH resumes from a specific file.
+existing checkpoint and start over. --resume PATH resumes from a specific file. The architecture
+of a resumed run always comes from the checkpoint itself, so a checkpoint of a different size
+(for example the old 9.7M Pip) must be moved aside before training Pip-Medium. train_curriculum.py
+does this automatically.
 
 SAFE STOPS: on SIGTERM (for example from `kill`) or Ctrl-C, training finishes the current step,
 saves a checkpoint, and exits. Saves are written to a temp file first, so a checkpoint is never
 left half-written.
 
-SPEED FLAGS (all opt-in, all off by default, so existing runs behave exactly as before):
+LR SCHEDULE: linear warmup for --warmup steps (default 500), then cosine decay to 10% of --lr.
+GRADIENT CLIPPING: global norm clipped to --clip (default 1.0) every step.
+
+SPEED FLAGS (all opt-in, all off by default):
   --threads N   set torch CPU threads to N (0 = leave torch's default, which is the physical core count)
   --bf16        run the forward pass under torch.autocast(cpu, bfloat16). Weights and optimizer stay
                 float32, so checkpoints are unchanged. Falls back to float32 if bfloat16 is not usable.
@@ -149,18 +157,19 @@ def main():
     p.add_argument("--fresh", action="store_true", help="ignore an existing --out checkpoint and start over")
     p.add_argument("--steps", type=int, default=5000, help="total step target (not additional steps)")
     p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--warmup", type=int, default=200)
+    p.add_argument("--lr", type=float, default=6e-4, help="peak learning rate (Pip-Medium)")
+    p.add_argument("--warmup", type=int, default=500, help="linear warmup steps")
+    p.add_argument("--clip", type=float, default=1.0, help="gradient norm clip")
     p.add_argument("--log_every", type=int, default=10)
     p.add_argument("--eval_every", type=int, default=250)
     p.add_argument("--eval_iters", type=int, default=5)
     p.add_argument("--eval_at_start", action="store_true")
     p.add_argument("--save_every", type=int, default=200, help="save a checkpoint every N steps")
     p.add_argument("--vocab_size", type=int, default=2048)
-    p.add_argument("--n_layer", type=int, default=6)
+    p.add_argument("--n_layer", type=int, default=8)
     p.add_argument("--n_head", type=int, default=8)
-    p.add_argument("--n_embd", type=int, default=352)
-    p.add_argument("--block_size", type=int, default=256)
+    p.add_argument("--n_embd", type=int, default=512)
+    p.add_argument("--block_size", type=int, default=512)
     p.add_argument("--threads", type=int, default=0, help="CPU threads for torch (0 = torch default)")
     p.add_argument("--bf16", action="store_true", help="bfloat16 autocast on CPU (falls back to float32)")
     p.add_argument("--compile", action="store_true", help="torch.compile the training forward (falls back to eager)")
@@ -226,6 +235,7 @@ def main():
     n = int(0.9 * len(data))
     splits = {"train": data[:n], "val": data[n:]}
     log(f"vocab: {tokenizer.vocab_size} | tokens: {len(data)} | chars: {len(text)}")
+    log(f"model: {cfg.n_layer} layers, {cfg.n_head} heads, width {cfg.n_embd}, context {cfg.block_size}")
     log(f"parameters: {model.num_parameters() / 1e6:.2f}M")
     log(f"training steps {start_step} to {args.steps} | batch {args.batch_size} | block {cfg.block_size}")
 
@@ -257,7 +267,7 @@ def main():
                 _, loss = train_model(x, y)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
             optimizer.step()
 
             lv = loss.item()

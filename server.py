@@ -291,7 +291,7 @@ def main():
     global BRAIN, MEM
     ap = argparse.ArgumentParser(description="Pip web server")
     ap.add_argument("--port", type=int, default=8000)
-    ap.add_argument("--ckpt", default=pc.DEFAULT_CKPT)
+    ap.add_argument("--ckpt", default=None, help="checkpoint folder or Hugging Face id; default is SmolLM2")
     args = ap.parse_args()
 
     if vault.vault_exists():
@@ -300,7 +300,7 @@ def main():
             print("[vault] too many wrong attempts. Pip stays locked.", flush=True)
             return
     MEM = pc.load_memory()
-    BRAIN = pc.Brain(args.ckpt)
+    BRAIN = pc.Brain(pc.resolve_model_source(args.ckpt))
     httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Pip is running at http://127.0.0.1:{args.port}  (brain: {BRAIN.mode})", flush=True)
     if vault.vault_exists():

@@ -10,11 +10,11 @@
   /* Strict black and white. The only colored elements are the 12x12 sprite and the mood indicator,
      which take Pip's current mood color (any hex Pip chooses). */
   :root {
-    --bg: #0d0d0d;
+    --bg: #000000;
     --black: #000000;
     --white: #ffffff;
-    --text: #e6e6e6;
-    --muted: #8a8a8a;
+    --text: #ffffff;
+    --muted: #bdbdbd;
     --border: #3a3a3a;
     --mood: #ffffff;
     --font: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -155,7 +155,7 @@
     }));
   }
   function drawStars() {
-    ctx.fillStyle = '#0d0d0d';
+    ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#ffffff';
     for (const s of stars) {
@@ -176,7 +176,6 @@
   const SIZE = 12;
   const HEX_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
   const spriteEl = document.getElementById('sprite');
-  const squareEl = document.getElementById('moodSquare');
   const moodLabel = document.getElementById('moodLabel');
   const moodHex = document.getElementById('moodHex');
   const cells = [];
@@ -319,7 +318,7 @@
       if (!ok) { addLine('!', data.error || 'search failed', 'err'); return; }
       addLine('web:', data.excerpt, 'web');
     } catch (e) {
-      addLine('!', 'Cannot reach the Pip server. Is server.py running?', 'err');
+      addLine('!', 'Cannot reach the Pip server. Start it with: python run.py', 'err');
     } finally {
       setBusy(false);
     }
@@ -337,7 +336,7 @@
       drawMood(data.mood);
       brainEl.textContent = 'Brain: ' + data.brain;
     } catch (e) {
-      addLine('!', 'Cannot reach the Pip server. Is server.py running?', 'err');
+      addLine('!', 'Cannot reach the Pip server. Start it with: python run.py', 'err');
     } finally {
       setBusy(false);
     }
@@ -396,9 +395,9 @@
       }
       addLine('sys:', 'Pip is online. Type /help for commands. Pip stays offline unless you approve a web request.', 'sys');
     } catch (e) {
-      drawMood({ name: 'curious', hex: '#ff8c00', sprite: null });
+      drawMood({ name: 'curious', hex: '#ffffff', sprite: null });
       brainEl.textContent = 'Brain: offline';
-      addLine('!', 'Cannot reach the Pip server. Start it with: python server.py', 'err');
+      addLine('!', 'Cannot reach the Pip server. Start it with: python run.py', 'err');
     }
     input.focus();
   }

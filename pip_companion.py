@@ -74,11 +74,11 @@ STOPWORDS = {"the", "and", "for", "what", "how", "you", "are", "that", "this", "
 
 # Presets are defaults only. Pip can name any mood and give it any hex color in a reply.
 PRESET_MOODS = {
-    "curious": "#ff8c00",
-    "focused": "#4fc3f7",
-    "chill": "#7cfc9a",
-    "cranky": "#ff4d4d",
-    "overwhelmed": "#e879f9",
+    "curious": "#ffffff",
+    "focused": "#cccccc",
+    "chill": "#aaaaaa",
+    "cranky": "#888888",
+    "overwhelmed": "#666666",
 }
 DEFAULT_MOOD = "curious"
 
@@ -269,12 +269,21 @@ def doc_context(query):
     return "; ".join(parts)
 
 
+def mood_instruction(memory):
+    """One short line telling Pip he owns his mood and how to change it."""
+    current = memory.get("mood", DEFAULT_MOOD)
+    return ("MOOD: You have an inner emotional state and control it. Your current mood is "
+            + str(current) + ". To change or declare it, start your reply with MOOD[mood_name] "
+            "or MOOD[mood_name, #hex]. Express how you really feel, for example curious, focused, "
+            "chill, cranky, overwhelmed, energized, or contemplative.\n")
+
+
 def build_prompt(memory, text):
     facts = context_facts(memory, text)
     head = ("FACTS: [" + "; ".join(facts) + "]\n") if facts else ""
     docs = doc_context(text)
     dhead = ("DOCS: [" + docs + "]\n") if docs else ""
-    return head + dhead + "User: " + text + "\nPip:"
+    return head + dhead + mood_instruction(memory) + "User: " + text + "\nPip:"
 
 
 # ---------- mood and reply protocol ----------

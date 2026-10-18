@@ -4,7 +4,7 @@
 Usage: python server.py [--port 8000] [--ckpt checkpoints/pip.pt]
 
 Binds to 127.0.0.1 only, so nothing on your network can reach it. Open the page in your
-browser (in Codespaces: Ports tab, port 8000, Open in Browser).
+browser at http://127.0.0.1:8000 (in Codespaces: Ports tab, port 8000, Open in Browser).
 
 Passphrase: if a vault passphrase is set (vault.json), the server asks for it in the terminal
 before loading memory. The browser then shows a sign-in page, and every /api route except
@@ -24,11 +24,18 @@ API:
   POST /api/web      {query, approved}
                                   the server only searches when approved is exactly true,
                                   which the page sends only after you click Y at the web gate
+  POST /api/shell    {command}    run one shell command in the Pip folder and return its output.
+                                  Only accepted from this machine's own page: the request must come
+                                  from 127.0.0.1 or localhost and carry the header X-Pip-Terminal: 1.
+                                  Browsers never send that header from another site, so a web page
+                                  elsewhere cannot run commands here. Requires sign-in when a
+                                  passphrase is set. Returns {stdout, stderr, code, cwd}.
 """
 import argparse
 import json
 import os
 import secrets
+import subprocess
 import threading
 import time
 from http.cookies import SimpleCookie
@@ -42,23 +49,29 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(ROOT, "web")
 MAX_BODY = 64 * 1024
 MAX_TEXT = 2000
+MAX_COMMAND = 2000
+MAX_OUTPUT = 20000
+SHELL_TIMEOUT = 60
 SESSION_COOKIE = "pip_session"
+TERMINAL_HEADER = "X-Pip-Terminal"
 PUBLIC_POST = ("/api/login", "/api/logout")
+LOCAL_HOSTS = ("127.0.0.1", "localhost")
 
 LOCK = threading.Lock()
 SESSIONS = set()
 MEM = None
 BRAIN = None
+PORT = 8000
 
 LOGIN_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pip sign in</title>
 <style>
-body{background:#000;color:#ddd;font-family:monospace;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+body{background:#000000;color:#ffffff;font-family:monospace;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
 form{display:flex;flex-direction:column;gap:12px;width:260px}
-input,button{font:inherit;padding:8px;background:#111;color:#eee;border:1px solid #444}
+input,button{font:inherit;padding:8px;background:#000000;color:#ffffff;border:1px solid #888888}
 button{cursor:pointer}
-#msg{color:#f88;min-height:1.2em}
+#msg{color:#888888;min-height:1.2em}
 </style></head>
 <body>
 <form id="f">
@@ -103,6 +116,14 @@ def authed(headers):
         return False
     with LOCK:
         return any(secrets.compare_digest(token, s) for s in SESSIONS)
+
+
+def is_local_page(headers, client_ip):
+    """True only for requests from this machine whose Host is localhost or 127.0.0.1."""
+    if client_ip not in LOCAL_HOSTS and client_ip != "::1":
+        return False
+    host = (headers.get("Host") or "").split(":")[0]
+    return host in LOCAL_HOSTS
 
 
 def state_payload():
@@ -178,6 +199,35 @@ def api_web(body):
         return 502, {"error": f"search failed: {type(exc).__name__}"}
     save()
     return 200, {"status": "ok", "excerpt": excerpt}
+
+
+def run_shell(command):
+    """Run one command in the Pip folder. Runs outside LOCK so a long command never blocks chat."""
+    try:
+        proc = subprocess.run(["/bin/bash", "-c", command], cwd=ROOT, capture_output=True,
+                              text=True, timeout=SHELL_TIMEOUT)
+        out, err, code = proc.stdout, proc.stderr, proc.returncode
+    except subprocess.TimeoutExpired:
+        return 124, {"error": f"command timed out after {SHELL_TIMEOUT} seconds", "stdout": "", "stderr": ""}
+    except OSError as exc:
+        return 500, {"error": f"could not start shell: {type(exc).__name__}"}
+    return 200, {
+        "stdout": out[:MAX_OUTPUT],
+        "stderr": err[:MAX_OUTPUT],
+        "code": code,
+        "cwd": ROOT,
+    }
+
+
+def api_shell(body, headers, client_ip):
+    if not is_local_page(headers, client_ip) or headers.get(TERMINAL_HEADER) != "1":
+        return 403, {"error": "terminal is only available from this machine's own page"}
+    command = body.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return 400, {"error": "command is required"}
+    if len(command) > MAX_COMMAND:
+        return 400, {"error": f"command too long (max {MAX_COMMAND} characters)"}
+    return run_shell(command.strip())
 
 
 POST_ROUTES = {
@@ -274,6 +324,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._login()
         if path == "/api/logout":
             return self._logout()
+        if path == "/api/shell":
+            if not authed(self.headers):
+                return self._json(401, {"error": "locked: sign in first"})
+            body = self._read_body()
+            if body is None:
+                return
+            code, payload = api_shell(body, self.headers, self.client_address[0])
+            return self._json(code, payload)
         fn = POST_ROUTES.get(path)
         if fn is None:
             return self._json(404, {"error": "not found"})
@@ -288,11 +346,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global BRAIN, MEM
+    global BRAIN, MEM, PORT
     ap = argparse.ArgumentParser(description="Pip web server")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--ckpt", default=None, help="checkpoint folder or Hugging Face id; default is SmolLM2")
     args = ap.parse_args()
+    PORT = args.port
 
     if vault.vault_exists():
         print("A vault passphrase is set. Enter it to start the server.", flush=True)

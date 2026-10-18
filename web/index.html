@@ -28,6 +28,10 @@
   header h1 { margin: 0; font-size: 2.4rem; letter-spacing: 0.4em; color: var(--white); }
   header p { margin: 4px 0 0; color: var(--muted); letter-spacing: 0.15em; font-size: 0.8rem; text-transform: uppercase; }
 
+  .tabs { display: flex; gap: 8px; justify-content: center; }
+  .tabs button { background: var(--black); }
+  .tabs button[aria-selected="true"] { background: var(--white); color: var(--black); }
+
   .grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; flex: 1; min-height: 0; }
   @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
 
@@ -76,6 +80,18 @@
   .memory-form input:focus { outline: none; border-color: var(--white); }
   .memory-form button { padding: 6px 10px; }
 
+  /* terminal panel: black, white text, gray for prompts and output labels */
+  .term { display: flex; flex-direction: column; min-height: 420px; }
+  #termLog { flex: 1; overflow-y: auto; max-height: 60vh; font-size: 0.85rem; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; background: #000000; border: 1px solid var(--border); border-radius: 4px; padding: 10px; }
+  #termLog .prompt { color: var(--white); font-weight: 700; }
+  #termLog .out { color: var(--text); }
+  #termLog .errout { color: var(--muted); }
+  #termLog .meta { color: var(--muted); font-style: italic; }
+  .term form { margin-top: 8px; }
+  #termInput { flex: 1; background: var(--black); color: var(--white); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-family: var(--font); font-size: 0.9rem; }
+  #termInput:focus { outline: none; border-color: var(--white); }
+  .hidden { display: none !important; }
+
   /* web gate dialog */
   .gate-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 10; }
   .gate-backdrop[hidden] { display: none; }
@@ -93,9 +109,13 @@
   <header>
     <h1>PIP</h1>
     <p>Portable Intelligent Partner</p>
+    <div class="tabs" role="tablist">
+      <button id="tabChat" role="tab" aria-selected="true" type="button">Chat</button>
+      <button id="tabTerm" role="tab" aria-selected="false" type="button">Terminal</button>
+    </div>
   </header>
 
-  <div class="grid">
+  <div class="grid" id="chatView">
     <aside class="panel">
       <h2>Companion</h2>
       <div class="sprite-box">
@@ -122,6 +142,16 @@
       </form>
     </section>
   </div>
+
+  <section class="panel term hidden" id="termView" aria-label="Local terminal">
+    <h2>Terminal (this machine only)</h2>
+    <div id="termLog" aria-live="polite"></div>
+    <form id="termForm">
+      <input id="termInput" autocomplete="off" spellcheck="false" placeholder="type a command, e.g. ls, pwd, git status">
+      <button type="submit" id="termRun">Run</button>
+    </form>
+    <p class="muted">Runs bash in the Pip folder. Up and Down recall history. Ctrl+L clears. Commands run as you; be careful.</p>
+  </section>
 </div>
 
 <div id="gate" class="gate-backdrop" hidden>
@@ -226,6 +256,14 @@
   const gateText = document.getElementById('gateText');
   const gateYes = document.getElementById('gateYes');
   const gateNo = document.getElementById('gateNo');
+  const tabChat = document.getElementById('tabChat');
+  const tabTerm = document.getElementById('tabTerm');
+  const chatView = document.getElementById('chatView');
+  const termView = document.getElementById('termView');
+  const termLog = document.getElementById('termLog');
+  const termForm = document.getElementById('termForm');
+  const termInput = document.getElementById('termInput');
+  const termRun = document.getElementById('termRun');
 
   const HELP = [
     'Commands:',
@@ -264,10 +302,10 @@
     }
   }
 
-  async function post(path, body) {
+  async function post(path, body, extraHeaders) {
     const r = await fetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: Object.assign({ 'Content-Type': 'application/json' }, extraHeaders || {}),
       body: JSON.stringify(body),
     });
     const data = await r.json().catch(() => ({}));
@@ -381,6 +419,79 @@
     else addLine('!', data.error || 'could not save', 'err');
   });
 
+  // ---------- terminal tab: commands run on this machine via /api/shell ----------
+  const termHistory = [];
+  let termIdx = 0;
+  let termBusy = false;
+
+  function termLine(cls, text) {
+    const d = document.createElement('div');
+    d.className = cls;
+    d.textContent = text;
+    termLog.appendChild(d);
+    termLog.scrollTop = termLog.scrollHeight;
+  }
+
+  function showTab(which) {
+    const term = which === 'term';
+    chatView.classList.toggle('hidden', term);
+    termView.classList.toggle('hidden', !term);
+    tabChat.setAttribute('aria-selected', String(!term));
+    tabTerm.setAttribute('aria-selected', String(term));
+    if (term) termInput.focus(); else input.focus();
+  }
+  tabChat.addEventListener('click', () => showTab('chat'));
+  tabTerm.addEventListener('click', () => showTab('term'));
+
+  async function runCommand(cmd) {
+    termLine('prompt', '$ ' + cmd);
+    termBusy = true;
+    termRun.disabled = true;
+    termInput.disabled = true;
+    try {
+      const { ok, status, data } = await post('/api/shell', { command: cmd }, { 'X-Pip-Terminal': '1' });
+      if (!ok) {
+        termLine('meta', status === 403 ? 'Refused: the terminal only works from this machine.' : (data.error || 'command failed'));
+      } else {
+        if (data.stdout) termLine('out', data.stdout.replace(/\n$/, ''));
+        if (data.stderr) termLine('errout', data.stderr.replace(/\n$/, ''));
+        if (data.code !== 0) termLine('meta', '[exit ' + data.code + ']');
+      }
+    } catch (e) {
+      termLine('meta', 'Cannot reach the Pip server. Start it with: python run.py');
+    } finally {
+      termBusy = false;
+      termRun.disabled = false;
+      termInput.disabled = false;
+      termInput.focus();
+    }
+  }
+
+  termForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (termBusy) return;
+    const cmd = termInput.value.trim();
+    if (!cmd) return;
+    termInput.value = '';
+    if (termHistory[termHistory.length - 1] !== cmd) termHistory.push(cmd);
+    termIdx = termHistory.length;
+    if (cmd === 'clear') { termLog.textContent = ''; return; }
+    await runCommand(cmd);
+  });
+
+  termInput.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp') {
+      if (termIdx > 0) { termIdx -= 1; termInput.value = termHistory[termIdx]; }
+      e.preventDefault();
+    } else if (e.key === 'ArrowDown') {
+      if (termIdx < termHistory.length) { termIdx += 1; termInput.value = termHistory[termIdx] || ''; }
+      e.preventDefault();
+    } else if (e.ctrlKey && e.key.toLowerCase() === 'l') {
+      termLog.textContent = '';
+      e.preventDefault();
+    }
+  });
+
   // ---------- startup ----------
   async function boot() {
     try {
@@ -399,6 +510,7 @@
       brainEl.textContent = 'Brain: offline';
       addLine('!', 'Cannot reach the Pip server. Start it with: python run.py', 'err');
     }
+    termLine('meta', 'Local terminal. Runs in the Pip folder on this machine. Type a command and press Enter.');
     input.focus();
   }
   boot();

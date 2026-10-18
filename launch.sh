@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Pip portable launcher for Linux. Double-click Pip.desktop, or run: bash launch.sh
-# Works from a USB stick. Offline-first: it never downloads anything unless you choose to.
+# Pip portable launcher for Linux. Run via Pip.desktop (double-click) or: bash launch.sh
+# Offline-first: nothing is downloaded unless the dependencies are missing AND no ./wheels folder exists.
 #
-# Order of work:
-#   1. Pick a Python 3.11 or 3.12 (drive .venv first, then system python3.11/3.12/3.13).
-#   2. Make sure numpy, torch, and transformers import. If not, install from ./wheels offline.
-#      Only if that fails does it try the network, and only with your consent.
-#   3. Start run.py in the background, wait until port 8000 answers, then open the browser.
+#   1. Pick Python 3.11, 3.12, or 3.13 (drive .venv first, then system python3.x).
+#   2. Check numpy, torch, transformers import. If not, make .venv here and install from ./wheels.
+#   3. Start run.py on PIP_PORT (default 8000), wait until it answers, open the default browser.
 #
-# Set PIP_PORT to use another port (default 8000). Set PIP_NO_BROWSER=1 to skip opening a browser.
+# Env: PIP_PORT=8000   PIP_NO_BROWSER=1 to skip opening a browser.
+# Log: pip_launch.log next to this script (also printed to the terminal).
 
 set -u
 
@@ -21,18 +20,20 @@ VENV="$ROOT/.venv"
 WHEELS="$ROOT/wheels"
 LOG="$ROOT/pip_launch.log"
 
-# ---------- helpers ----------
-
 say() { echo "[pip] $*"; }
 
-# Show a dialog when there is a display, otherwise just print. Never fails the script.
+HAS_DISPLAY=0
+if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then HAS_DISPLAY=1; fi
+
+# Show a popup when there is a display. Never fails the script.
 notify() {
-  local msg="$1"
-  say "$msg"
-  if command -v zenity >/dev/null 2>&1 && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
-    zenity --info --title="Pip" --text="$msg" >/dev/null 2>&1 || true
-  elif command -v notify-send >/dev/null 2>&1 && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
-    notify-send "Pip" "$msg" >/dev/null 2>&1 || true
+  say "$1"
+  if [ "$HAS_DISPLAY" = "1" ]; then
+    if command -v zenity >/dev/null 2>&1; then
+      zenity --info --title="Pip" --text="$1" >/dev/null 2>&1 || true
+    elif command -v notify-send >/dev/null 2>&1; then
+      notify-send "Pip" "$1" >/dev/null 2>&1 || true
+    fi
   fi
 }
 
@@ -41,25 +42,26 @@ fail() {
   exit 1
 }
 
-# Pick a terminal to show output when launched from a file manager (no terminal attached).
-open_terminal_if_needed() {
-  if [ -t 1 ] || [ "${PIP_IN_TERMINAL:-0}" = "1" ]; then return 0; fi
+# A file manager runs this with no terminal. Reopen in a terminal so the output is visible.
+if [ ! -t 1 ] && [ "${PIP_IN_TERMINAL:-0}" != "1" ] && [ "$HAS_DISPLAY" = "1" ]; then
   for t in x-terminal-emulator gnome-terminal konsole xfce4-terminal mate-terminal lxterminal xterm; do
     if command -v "$t" >/dev/null 2>&1; then
-      case "$t" in
-        gnome-terminal) exec gnome-terminal -- env PIP_IN_TERMINAL=1 bash "$0" "$@" ;;
-        *) exec "$t" -e env PIP_IN_TERMINAL=1 bash "$0" "$@" ;;
-      esac
+      if [ "$t" = "gnome-terminal" ]; then
+        exec "$t" -- env PIP_IN_TERMINAL=1 bash "$ROOT/launch.sh"
+      else
+        exec "$t" -e "env PIP_IN_TERMINAL=1 bash '$ROOT/launch.sh'"
+      fi
     fi
   done
-  # No terminal emulator found: keep going with output in the log only.
-}
+fi
 
-# Find a Python 3.11/3.12/3.13 binary, or print nothing.
+# Send everything to the terminal and to the log.
+: > "$LOG"
+exec > >(tee -a "$LOG") 2>&1
+
+# Find a usable Python 3.11-3.13. Prints the path, or returns 1.
 find_python() {
-  if [ -x "$VENV/bin/python" ]; then
-    echo "$VENV/bin/python"; return 0
-  fi
+  if [ -x "$VENV/bin/python" ]; then echo "$VENV/bin/python"; return 0; fi
   for c in python3.12 python3.11 python3.13 python3; do
     if command -v "$c" >/dev/null 2>&1; then
       v=$("$c" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)
@@ -70,28 +72,24 @@ find_python() {
 }
 
 # True when the deps Pip needs all import with the given python.
-deps_ok() {
-  "$1" -c 'import numpy, torch, transformers' >/dev/null 2>&1
+deps_ok() { "$1" -c 'import numpy, torch, transformers' >/dev/null 2>&1; }
+
+# True when something already answers on the port. Uses Python, so curl is not needed.
+server_up() {
+  "$1" -c "import urllib.request,sys
+urllib.request.urlopen('$URL/', timeout=2)" >/dev/null 2>&1
 }
 
-# ---------- start ----------
-
-# Reset the log for this run.
-: > "$LOG"
-exec >>"$LOG" 2>&1
-open_terminal_if_needed "$@"
-
-say "Pip launcher starting in $ROOT"
+say "Pip launcher in $ROOT"
 
 PY="$(find_python)" || fail "no Python 3.11, 3.12, or 3.13 was found on this computer"
-say "Using Python: $PY ($("$PY" --version 2>&1))"
+say "Python: $PY ($("$PY" --version 2>&1))"
 
-# Make a portable .venv on the drive if none exists and dependencies are missing.
 if ! deps_ok "$PY"; then
-  say "Dependencies are missing for this Python. Looking for an offline wheel folder..."
+  say "Dependencies are missing for this Python."
   if [ ! -d "$VENV" ]; then
     say "Creating a portable environment at $VENV"
-    "$PY" -m venv "$VENV" || fail "could not create .venv (is python3-venv installed?)"
+    "$PY" -m venv "$VENV" || fail "could not create .venv (install the python3-venv package)"
   fi
   PY="$VENV/bin/python"
   if deps_ok "$PY"; then
@@ -101,49 +99,48 @@ if ! deps_ok "$PY"; then
     "$PY" -m pip install --no-index --find-links "$WHEELS" -r requirements.txt \
       || fail "installing from ./wheels failed; see the log"
   else
-    say "No ./wheels folder and dependencies are missing. Trying the network once."
+    say "No ./wheels folder. Trying the network once to install dependencies."
     "$PY" -m pip install -r requirements.txt \
       || fail "dependencies are missing and the install needs internet"
   fi
 fi
 
-if ! deps_ok "$PY"; then
-  fail "numpy, torch, or transformers still do not import with $PY"
-fi
+deps_ok "$PY" || fail "numpy, torch, or transformers still do not import with $PY"
 say "Dependencies OK."
 
-# Already running on this port? Just open the browser.
-if curl -fsS -o /dev/null "$URL/api/state" 2>/dev/null || curl -fsS -o /dev/null "$URL/" 2>/dev/null; then
+SERVER_PID=""
+if server_up "$PY"; then
   say "Pip is already running at $URL"
 else
   say "Starting Pip at $URL"
   "$PY" "$ROOT/run.py" --port "$PORT" &
   SERVER_PID=$!
-  # Wait up to 60 seconds for the page to answer.
-  for i in $(seq 1 60); do
-    if curl -fsS -o /dev/null "$URL/" 2>/dev/null; then break; fi
+  started=0
+  for i in $(seq 1 90); do
+    if server_up "$PY"; then started=1; break; fi
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
       fail "Pip stopped during startup; see $LOG"
     fi
     sleep 1
   done
+  [ "$started" = "1" ] || fail "Pip did not answer on $URL within 90 seconds"
 fi
 
-# Open the default browser without blocking.
 if [ "${PIP_NO_BROWSER:-0}" != "1" ]; then
-  for opener in xdg-open sensible-browser x-www-browser gio; do
+  opened=0
+  for opener in xdg-open sensible-browser x-www-browser; do
     if command -v "$opener" >/dev/null 2>&1; then
-      if [ "$opener" = "gio" ]; then
-        gio open "$URL" >/dev/null 2>&1 && break
-      else
-        "$opener" "$URL" >/dev/null 2>&1 && break
-      fi
+      "$opener" "$URL" >/dev/null 2>&1 && opened=1 && break
     fi
   done
+  if [ "$opened" = "0" ] && command -v gio >/dev/null 2>&1; then
+    gio open "$URL" >/dev/null 2>&1 && opened=1
+  fi
+  [ "$opened" = "1" ] || say "Could not open a browser. Open $URL yourself."
 fi
+
 say "Pip is running at $URL. Close this window to stop it."
 
-# Keep the launcher attached so closing the window stops Pip.
-if [ -n "${SERVER_PID:-}" ]; then
+if [ -n "$SERVER_PID" ]; then
   wait "$SERVER_PID"
 fi

@@ -1,0 +1,1 @@
+Xavier's tech focus: running language models locally. Small models on CPU, bigger models on GPU with LoRA fine-tuning. Comfortable with Linux, Git, and terminals. Cares about zero friction: one command to start, instant launch, no setup stiction. Wants a sovereign setup that runs fully offline from a USB stick, with no required cloud service. Repo: coffee-hour/Pip.

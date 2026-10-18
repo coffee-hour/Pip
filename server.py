@@ -11,10 +11,19 @@ before loading memory. The browser then shows a sign-in page, and every /api rou
 /api/login needs a session cookie from a correct sign-in. Sessions live in memory only, so a
 restart asks again. With no passphrase set, the page and API are open, as before.
 
+Profiles: Pip starts in the Default profile. Default is neutral and sees no saved facts or chat
+history. The Xavier profile is unlocked with its password (profiles.py: PIP_XAVIER_PASSWORD, with a
+built-in default). The unlock is stored in a separate profile cookie. Logging out or choosing Default
+returns to Default.
+
 API:
   POST /api/login {passphrase}    sign in. Sets an HttpOnly session cookie. 401 on a wrong passphrase.
-  POST /api/logout {}             end the session
-  GET  /api/state                 mood {name, hex, sprite}, brain mode, facts, profile, recent history
+  POST /api/logout {}             end the session and return to the Default profile
+  POST /api/profile {profile, password}
+                                  profile is "default" or "xavier". Xavier needs the correct password.
+                                  401 on a wrong password. Sets the profile cookie.
+  GET  /api/state                 active_profile, mood {name, hex, sprite}, brain mode, facts, profile,
+                                  recent history. facts, profile, and history are empty in Default.
   POST /api/chat     {text}       reply {reply, thought, notes, mood, brain}. Tags (MOOD, SPRITE,
                                   THOUGHT, REMEMBER, tool tags) are handled and never shown as text.
                                   Web search and file writes are NOT approved over HTTP: the page has
@@ -43,6 +52,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 import pip_companion as pc
+import profiles
 import vault
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -53,12 +63,15 @@ MAX_COMMAND = 2000
 MAX_OUTPUT = 20000
 SHELL_TIMEOUT = 60
 SESSION_COOKIE = "pip_session"
+PROFILE_COOKIE = "pip_profile"
 TERMINAL_HEADER = "X-Pip-Terminal"
 PUBLIC_POST = ("/api/login", "/api/logout")
 LOCAL_HOSTS = ("127.0.0.1", "localhost")
 
 LOCK = threading.Lock()
 SESSIONS = set()
+PROFILE_TOKENS = {}  # profile cookie token -> profile name (only Xavier is stored; Default is the absence of a token)
+CURRENT_PROFILE = profiles.DEFAULT_PROFILE  # set under LOCK for each request before its handler runs
 MEM = None
 BRAIN = None
 PORT = 8000
@@ -97,14 +110,18 @@ document.getElementById("f").addEventListener("submit", async function (e) {
 """
 
 
-def session_token(headers):
+def cookie_value(headers, name):
     jar = SimpleCookie()
     try:
         jar.load(headers.get("Cookie", ""))
     except Exception:
         return None
-    morsel = jar.get(SESSION_COOKIE)
+    morsel = jar.get(name)
     return morsel.value if morsel is not None else None
+
+
+def session_token(headers):
+    return cookie_value(headers, SESSION_COOKIE)
 
 
 def authed(headers):
@@ -118,6 +135,41 @@ def authed(headers):
         return any(secrets.compare_digest(token, s) for s in SESSIONS)
 
 
+def active_profile(headers):
+    """The profile for this request: Xavier only when the profile cookie maps to an unlocked token."""
+    token = cookie_value(headers, PROFILE_COOKIE)
+    if not token:
+        return profiles.DEFAULT_PROFILE
+    with LOCK:
+        return PROFILE_TOKENS.get(token, profiles.DEFAULT_PROFILE)
+
+
+def set_current_profile(name):
+    """Called under LOCK before a handler runs, so the prompt wrapper knows which profile to use."""
+    global CURRENT_PROFILE
+    CURRENT_PROFILE = name
+
+
+def is_xavier(name):
+    return name == profiles.XAVIER_PROFILE
+
+
+def profile_build_prompt(memory, text):
+    """Wraps pip_companion.build_prompt. Prepends the profile context and hides saved facts in Default."""
+    name = CURRENT_PROFILE
+    view = memory if is_xavier(name) else dict(memory, facts=[])
+    prompt = _ORIGINAL_BUILD_PROMPT(view, text)
+    context = profiles.load_profile_context(name)
+    if context:
+        safe = context.replace("[", "(").replace("]", ")")
+        prompt = "PROFILE: [" + safe + "]\n" + prompt
+    return prompt
+
+
+_ORIGINAL_BUILD_PROMPT = pc.build_prompt
+pc.build_prompt = profile_build_prompt
+
+
 def is_local_page(headers, client_ip):
     """True only for requests from this machine whose Host is localhost or 127.0.0.1."""
     if client_ip not in LOCAL_HOSTS and client_ip != "::1":
@@ -126,13 +178,15 @@ def is_local_page(headers, client_ip):
     return host in LOCAL_HOSTS
 
 
-def state_payload():
+def state_payload(profile):
+    xavier = is_xavier(profile)
     return {
+        "active_profile": profile,
         "mood": pc.mood_state(MEM),
         "brain": BRAIN.mode,
-        "facts": MEM["facts"],
-        "profile": MEM["profile"],
-        "history": MEM["history"][-50:],
+        "facts": MEM["facts"] if xavier else [],
+        "profile": MEM["profile"] if xavier else {},
+        "history": MEM["history"][-50:] if xavier else [],
     }
 
 
@@ -173,7 +227,8 @@ def api_remember(body):
     added = pc.remember(MEM, fact[:300])
     save()
     msg = "Saved to memory.json (plain text, anyone with this drive can read it)." if added else "Already remembered."
-    return 200, {"message": msg, "facts": MEM["facts"]}
+    facts = MEM["facts"] if is_xavier(CURRENT_PROFILE) else []
+    return 200, {"message": msg, "facts": facts}
 
 
 def api_clear(body):
@@ -299,8 +354,34 @@ class Handler(BaseHTTPRequestHandler):
         if token:
             with LOCK:
                 SESSIONS.discard(token)
+        profile_token = cookie_value(self.headers, PROFILE_COOKIE)
+        if profile_token:
+            with LOCK:
+                PROFILE_TOKENS.pop(profile_token, None)
         cookie = f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
-        self._json(200, {"ok": True}, [("Set-Cookie", cookie)])
+        profile_clear = f"{PROFILE_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+        self._json(200, {"ok": True}, [("Set-Cookie", cookie), ("Set-Cookie", profile_clear)])
+
+    def _profile(self, body):
+        target = body.get("profile")
+        if target == profiles.DEFAULT_PROFILE:
+            old = cookie_value(self.headers, PROFILE_COOKIE)
+            if old:
+                with LOCK:
+                    PROFILE_TOKENS.pop(old, None)
+            clear = f"{PROFILE_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+            return self._json(200, {"ok": True, "active_profile": profiles.DEFAULT_PROFILE}, [("Set-Cookie", clear)])
+        if target != profiles.XAVIER_PROFILE:
+            return self._json(400, {"error": "profile must be default or xavier"})
+        password = body.get("password")
+        if not profiles.check_password(password):
+            time.sleep(1.0)  # slow down guessing
+            return self._json(401, {"error": "wrong password"})
+        token = secrets.token_urlsafe(32)
+        with LOCK:
+            PROFILE_TOKENS[token] = profiles.XAVIER_PROFILE
+        cookie = f"{PROFILE_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"
+        self._json(200, {"ok": True, "active_profile": profiles.XAVIER_PROFILE}, [("Set-Cookie", cookie)])
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -312,8 +393,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/state":
             if not authed(self.headers):
                 return self._json(401, {"error": "locked: sign in first"})
+            profile = active_profile(self.headers)
             with LOCK:
-                payload = state_payload()
+                payload = state_payload(profile)
             self._json(200, payload)
         else:
             self._json(404, {"error": "not found"})
@@ -324,6 +406,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._login()
         if path == "/api/logout":
             return self._logout()
+        if path == "/api/profile":
+            if not authed(self.headers):
+                return self._json(401, {"error": "locked: sign in first"})
+            body = self._read_body()
+            if body is None:
+                return
+            return self._profile(body)
         if path == "/api/shell":
             if not authed(self.headers):
                 return self._json(401, {"error": "locked: sign in first"})
@@ -340,7 +429,9 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_body()
         if body is None:
             return
+        profile = active_profile(self.headers)
         with LOCK:
+            set_current_profile(profile)
             code, payload = fn(body)
         self._json(code, payload)
 

@@ -1,0 +1,9 @@
+# Big-model LoRA / QLoRA stack. Needs an NVIDIA GPU for 4-bit training (bitsandbytes).
+torch>=2.2
+transformers>=4.44
+peft>=0.11
+trl>=0.9
+bitsandbytes>=0.43
+accelerate>=0.30
+datasets>=2.19
+sentencepiece>=0.2

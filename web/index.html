@@ -32,6 +32,11 @@
   .tabs button { background: var(--black); }
   .tabs button[aria-selected="true"] { background: var(--white); color: var(--black); }
 
+  .profile-bar { display: flex; gap: 8px; justify-content: center; align-items: center; margin-top: 10px; font-size: 0.8rem; color: var(--muted); flex-wrap: wrap; }
+  .profile-bar button { background: var(--black); padding: 4px 10px; font-size: 0.75rem; }
+  .profile-bar button[aria-pressed="true"] { background: var(--white); color: var(--black); }
+  #profileLabel { color: var(--text); letter-spacing: 0.1em; }
+
   .grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; flex: 1; min-height: 0; }
   @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
 
@@ -100,6 +105,9 @@
   #gateText { color: var(--white); font-size: 0.95rem; word-wrap: break-word; }
   .gate p.small { color: var(--muted); font-size: 0.75rem; margin: 10px 0 14px; }
   .gate .actions { display: flex; gap: 10px; justify-content: flex-end; }
+  .gate input { width: 100%; background: var(--black); color: var(--white); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: var(--font); font-size: 0.9rem; margin-top: 6px; }
+  .gate input:focus { outline: none; border-color: var(--white); }
+  #pwdMsg { color: var(--white); min-height: 1.2em; font-size: 0.8rem; margin: 6px 0 0; }
 </style>
 </head>
 <body>
@@ -112,6 +120,11 @@
     <div class="tabs" role="tablist">
       <button id="tabChat" role="tab" aria-selected="true" type="button">Chat</button>
       <button id="tabTerm" role="tab" aria-selected="false" type="button">Terminal</button>
+    </div>
+    <div class="profile-bar" role="group" aria-label="Profile">
+      <span id="profileLabel">Profile: Default</span>
+      <button id="profileDefault" type="button" aria-pressed="true">Default</button>
+      <button id="profileXavier" type="button" aria-pressed="false">Xavier</button>
     </div>
   </header>
 
@@ -164,6 +177,19 @@
       <button id="gateYes" type="button">Y</button>
     </div>
   </div>
+</div>
+
+<div id="pwdDialog" class="gate-backdrop" hidden>
+  <form id="pwdForm" class="gate" role="dialog" aria-modal="true" aria-labelledby="pwdTitle">
+    <h3 id="pwdTitle">XAVIER PROFILE</h3>
+    <p class="small">Enter the Xavier profile password to switch profiles. Escape cancels.</p>
+    <input id="pwdInput" type="password" autocomplete="off" spellcheck="false" placeholder="password">
+    <div id="pwdMsg"></div>
+    <div class="actions">
+      <button id="pwdCancel" type="button">Cancel</button>
+      <button id="pwdSubmit" type="submit">Unlock</button>
+    </div>
+  </form>
 </div>
 
 <script>
@@ -264,6 +290,14 @@
   const termForm = document.getElementById('termForm');
   const termInput = document.getElementById('termInput');
   const termRun = document.getElementById('termRun');
+  const profileLabel = document.getElementById('profileLabel');
+  const profileDefaultBtn = document.getElementById('profileDefault');
+  const profileXavierBtn = document.getElementById('profileXavier');
+  const pwdDialog = document.getElementById('pwdDialog');
+  const pwdForm = document.getElementById('pwdForm');
+  const pwdInput = document.getElementById('pwdInput');
+  const pwdMsg = document.getElementById('pwdMsg');
+  const pwdCancel = document.getElementById('pwdCancel');
 
   const HELP = [
     'Commands:',
@@ -302,6 +336,13 @@
     }
   }
 
+  function renderProfile(name) {
+    const isXavier = name === 'xavier';
+    profileLabel.textContent = 'Profile: ' + (isXavier ? 'Xavier' : 'Default');
+    profileXavierBtn.setAttribute('aria-pressed', String(isXavier));
+    profileDefaultBtn.setAttribute('aria-pressed', String(!isXavier));
+  }
+
   async function post(path, body, extraHeaders) {
     const r = await fetch(path, {
       method: 'POST',
@@ -317,6 +358,75 @@
     sendBtn.disabled = busy;
     if (!busy) input.focus();
   }
+
+  // ---------- profile: Default or Xavier (Xavier needs the password) ----------
+  // Loads the server state for the active profile and redraws the page from it.
+  function applyState(s) {
+    drawMood(s.mood);
+    brainEl.textContent = 'Brain: ' + s.brain;
+    renderFacts(s.facts || []);
+    renderProfile(s.active_profile);
+    logEl.textContent = '';
+    for (const h of s.history || []) {
+      if (h.role === 'user') addLine('you>', h.text, 'user');
+      else if (h.role === 'pip') addLine('pip:', h.text, 'pip');
+    }
+  }
+
+  async function reloadState() {
+    const r = await fetch('/api/state');
+    if (!r.ok) throw new Error('state');
+    applyState(await r.json());
+  }
+
+  function openPasswordDialog() {
+    pwdMsg.textContent = '';
+    pwdInput.value = '';
+    pwdDialog.hidden = false;
+    pwdInput.focus();
+  }
+
+  function closePasswordDialog() {
+    pwdDialog.hidden = true;
+    pwdInput.value = '';
+    pwdMsg.textContent = '';
+    profileXavierBtn.focus();
+  }
+
+  async function switchToDefault() {
+    const { ok, data } = await post('/api/profile', { profile: 'default' });
+    if (!ok) { addLine('!', data.error || 'could not switch profile', 'err'); return; }
+    await reloadState();
+    addLine('sys:', 'Switched to the Default profile.', 'sys');
+  }
+
+  async function switchToXavier(password) {
+    const { ok, status, data } = await post('/api/profile', { profile: 'xavier', password });
+    if (ok) {
+      closePasswordDialog();
+      await reloadState();
+      addLine('sys:', 'Xavier profile unlocked.', 'sys');
+      return;
+    }
+    pwdMsg.textContent = status === 401 ? 'Wrong password.' : (data.error || 'could not unlock');
+    pwdInput.value = '';
+    pwdInput.focus();
+  }
+
+  profileDefaultBtn.addEventListener('click', () => {
+    switchToDefault().catch(() => addLine('!', 'Cannot reach the Pip server. Start it with: python run.py', 'err'));
+  });
+  profileXavierBtn.addEventListener('click', openPasswordDialog);
+  pwdCancel.addEventListener('click', closePasswordDialog);
+  pwdForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const password = pwdInput.value;
+    if (!password) return;
+    switchToXavier(password).catch(() => { pwdMsg.textContent = 'Cannot reach the Pip server.'; });
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !pwdDialog.hidden) closePasswordDialog();
+  });
 
   // ---------- web gate: nothing is sent to the server until you press Y ----------
   function askGate(query) {
@@ -495,15 +605,7 @@
   // ---------- startup ----------
   async function boot() {
     try {
-      const r = await fetch('/api/state');
-      const s = await r.json();
-      drawMood(s.mood);
-      brainEl.textContent = 'Brain: ' + s.brain;
-      renderFacts(s.facts);
-      for (const h of s.history) {
-        if (h.role === 'user') addLine('you>', h.text, 'user');
-        else if (h.role === 'pip') addLine('pip:', h.text, 'pip');
-      }
+      await reloadState();
       addLine('sys:', 'Pip is online. Type /help for commands. Pip stays offline unless you approve a web request.', 'sys');
     } catch (e) {
       drawMood({ name: 'curious', hex: '#ffffff', sprite: null });

@@ -16,12 +16,19 @@ saves a checkpoint, and exits. Saves are written to a temp file first, so a chec
 left half-written.
 
 LR SCHEDULE: linear warmup for --warmup steps (default 500), then cosine decay to 10% of --lr.
-GRADIENT CLIPPING: global norm clipped to --clip (default 1.0) every step.
+GRADIENT CLIPPING: global norm clipped to --clip (default 1.0) every optimizer step.
+
+GRADIENT ACCUMULATION: --accum_steps N runs N micro-batches of --batch_size per optimizer step, so
+the effective batch is batch_size * accum_steps. Each micro-batch loss is divided by N before backward,
+so gradients match one larger batch. --steps counts optimizer steps, not micro-batches.
+
+MIXED PRECISION: --bf16 runs the forward pass under torch.autocast in bfloat16 on CPU or CUDA.
+Weights and optimizer state stay float32, so checkpoints are unchanged. If bfloat16 is not usable on
+the device, training falls back to float32.
 
 SPEED FLAGS (all opt-in, all off by default):
   --threads N   set torch CPU threads to N (0 = leave torch's default, which is the physical core count)
-  --bf16        run the forward pass under torch.autocast(cpu, bfloat16). Weights and optimizer stay
-                float32, so checkpoints are unchanged. Falls back to float32 if bfloat16 is not usable.
+  --bf16        bfloat16 autocast (CPU or CUDA). Falls back to float32 if bfloat16 is not usable.
   --compile     wrap the model in torch.compile for training steps. Falls back to eager if unsupported.
                 Checkpoints always store the plain model, never the compiled wrapper.
 
@@ -76,11 +83,13 @@ def get_batch(data, block_size, batch_size, device):
     return x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
 
-def bf16_usable():
-    """True only if a bfloat16 CPU autocast region runs on this machine."""
+def bf16_usable(device_type="cpu"):
+    """True only if a bfloat16 autocast region runs on this device type."""
     try:
-        with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
-            probe = torch.ones(2, 2) @ torch.ones(2, 2)
+        if device_type == "cuda" and not torch.cuda.is_bf16_supported():
+            return False
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+            probe = torch.ones(2, 2, device=device_type) @ torch.ones(2, 2, device=device_type)
         return bool(probe.dtype is not None)
     except Exception:
         return False
@@ -155,25 +164,29 @@ def main():
     p.add_argument("--out", default="checkpoints/pip.pt")
     p.add_argument("--resume", default=None, help="resume from this checkpoint path")
     p.add_argument("--fresh", action="store_true", help="ignore an existing --out checkpoint and start over")
-    p.add_argument("--steps", type=int, default=5000, help="total step target (not additional steps)")
-    p.add_argument("--batch_size", type=int, default=32)
+    p.add_argument("--steps", type=int, default=5000, help="total optimizer step target (not additional steps)")
+    p.add_argument("--batch_size", type=int, default=32, help="micro-batch size per forward pass")
+    p.add_argument("--accum_steps", type=int, default=1, help="micro-batches per optimizer step (gradient accumulation)")
     p.add_argument("--lr", type=float, default=6e-4, help="peak learning rate (Pip-Medium)")
-    p.add_argument("--warmup", type=int, default=500, help="linear warmup steps")
+    p.add_argument("--warmup", type=int, default=500, help="linear warmup optimizer steps")
     p.add_argument("--clip", type=float, default=1.0, help="gradient norm clip")
     p.add_argument("--log_every", type=int, default=10)
     p.add_argument("--eval_every", type=int, default=250)
     p.add_argument("--eval_iters", type=int, default=5)
     p.add_argument("--eval_at_start", action="store_true")
-    p.add_argument("--save_every", type=int, default=200, help="save a checkpoint every N steps")
+    p.add_argument("--save_every", type=int, default=200, help="save a checkpoint every N optimizer steps")
     p.add_argument("--vocab_size", type=int, default=2048)
     p.add_argument("--n_layer", type=int, default=8)
     p.add_argument("--n_head", type=int, default=8)
     p.add_argument("--n_embd", type=int, default=512)
     p.add_argument("--block_size", type=int, default=512)
     p.add_argument("--threads", type=int, default=0, help="CPU threads for torch (0 = torch default)")
-    p.add_argument("--bf16", action="store_true", help="bfloat16 autocast on CPU (falls back to float32)")
+    p.add_argument("--bf16", action="store_true", help="bfloat16 autocast on CPU or CUDA (falls back to float32)")
     p.add_argument("--compile", action="store_true", help="torch.compile the training forward (falls back to eager)")
     args = p.parse_args()
+
+    if args.accum_steps < 1:
+        p.error("--accum_steps must be at least 1")
 
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
@@ -185,10 +198,11 @@ def main():
     log(f"device: {device}")
 
     use_bf16 = False
+    amp_device = device if device in ("cpu", "cuda") else "cpu"
     if args.bf16:
-        if device == "cpu" and bf16_usable():
+        if device in ("cpu", "cuda") and bf16_usable(amp_device):
             use_bf16 = True
-            log("bf16 autocast: on (weights and optimizer stay float32)")
+            log(f"bf16 autocast: on ({amp_device}; weights and optimizer stay float32)")
         else:
             log("bf16 autocast: requested but not usable here, running float32")
 
@@ -237,7 +251,8 @@ def main():
     log(f"vocab: {tokenizer.vocab_size} | tokens: {len(data)} | chars: {len(text)}")
     log(f"model: {cfg.n_layer} layers, {cfg.n_head} heads, width {cfg.n_embd}, context {cfg.block_size}")
     log(f"parameters: {model.num_parameters() / 1e6:.2f}M")
-    log(f"training steps {start_step} to {args.steps} | batch {args.batch_size} | block {cfg.block_size}")
+    log(f"training steps {start_step} to {args.steps} | micro-batch {args.batch_size} x accum {args.accum_steps} "
+        f"= effective batch {args.batch_size * args.accum_steps} | block {cfg.block_size}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.1, betas=(0.9, 0.95))
     if ckpt is not None:
@@ -262,15 +277,18 @@ def main():
             for g in optimizer.param_groups:
                 g["lr"] = lr
 
-            x, y = get_batch(splits["train"], cfg.block_size, args.batch_size, device)
-            with torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=use_bf16):
-                _, loss = train_model(x, y)
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            micro_sum = 0.0
+            for _ in range(args.accum_steps):
+                x, y = get_batch(splits["train"], cfg.block_size, args.batch_size, device)
+                with torch.autocast(device_type=amp_device, dtype=torch.bfloat16, enabled=use_bf16):
+                    _, loss = train_model(x, y)
+                (loss / args.accum_steps).backward()
+                micro_sum += loss.item()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
             optimizer.step()
 
-            lv = loss.item()
+            lv = micro_sum / args.accum_steps
             run_loss = lv if run_loss is None else 0.9 * run_loss + 0.1 * lv
             done = step + 1
 

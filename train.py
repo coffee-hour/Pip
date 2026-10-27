@@ -8,8 +8,9 @@ AUTO-RESUME: if the --out checkpoint already exists, training continues from it 
 (model, optimizer, step counter, and tokenizer are all restored). Use --fresh to ignore an
 existing checkpoint and start over. --resume PATH resumes from a specific file. The architecture
 of a resumed run always comes from the checkpoint itself, so a checkpoint of a different size
-(for example the old 9.7M Pip) must be moved aside before training Pip-Medium. train_curriculum.py
-does this automatically.
+must be moved aside before training Pip-Medium. run_pip_pipeline.py does this automatically
+(check_arch_compat). Running train.py directly does not check the size, so use --fresh or move
+the old checkpoint aside yourself.
 
 SAFE STOPS: on SIGTERM (for example from `kill`) or Ctrl-C, training finishes the current step,
 saves a checkpoint, and exits. Saves are written to a temp file first, so a checkpoint is never

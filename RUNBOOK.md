@@ -9,19 +9,28 @@
 
 NVIDIA GPU: install the CUDA build of torch from https://pytorch.org instead. Training then uses bfloat16 automatically.
 
-## Prepare data and train (one command)
+## The two commands
 
-    python3 run_pip_pipeline.py
+    ./train.sh     to train
+    ./chat.sh      to talk to Pip
 
-This merges data/pip_curated_corpus.txt with input.txt, trains with train.py (auto-resume, gradient accumulation, checkpoints every 200 steps to checkpoints/pip.pt), and validates the checkpoint and tokenizer. Stop with Ctrl-C and re-run the same command to continue.
+Both scripts fall back to python if python3 is not found. If you see "Permission denied", run once: chmod +x train.sh chat.sh
 
-Options: --steps N, --fresh, --bf16 (CPU), --prepare-only.
+## Train
 
-## Test locally
+    ./train.sh
 
-    python3 run_pip_pipeline.py --prompt "Hello Pip"
+This merges data/pip_curated_corpus.txt with input.txt, trains with train.py (auto-resume, gradient accumulation, checkpoints every 200 steps to checkpoints/pip.pt), and validates the checkpoint and tokenizer. Stop with Ctrl-C and run ./train.sh again to continue.
 
-Interactive chat: python3 run_pip_pipeline.py --chat
+Extra options are passed through, for example: ./train.sh --steps N, ./train.sh --fresh, ./train.sh --bf16 (CPU), ./train.sh --prepare-only.
+
+## Talk to Pip
+
+    ./chat.sh
+
+Type a message and press Enter. Type /quit to exit.
+
+One-line test: python3 run_pip_pipeline.py --prompt "Hello Pip"
 
 ## Notes
 

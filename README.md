@@ -1,53 +1,40 @@
 # Pip
 
-Pip is a sovereign companion that runs on your own machine. Black and white, no amber. The web page is served only on 127.0.0.1, and nothing leaves the machine unless you approve a web search.
+Pip is a custom PyTorch transformer that you train on your own machine. It is sovereign: the model, tokenizer, and training data all live in this repo, and nothing is sent anywhere.
 
-## Step 1 (once, with internet): bundle the model for offline use
+No bloat. The core pipeline is a few Python files plus two shell scripts.
 
-    pip install huggingface_hub
-    python bundle_offline.py
+## Setup
 
-This downloads SmolLM2-135M-Instruct (about 270 MB) into checkpoints/smollm2. That folder is the offline bundle. Check it any time with: python bundle_offline.py --check
+    python3 -m venv .venv && source .venv/bin/activate
+    python3 -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+    python3 -m pip install -r requirements.txt
 
-## Step 2: start Pip
+NVIDIA GPU: install the CUDA build of torch from https://pytorch.org instead.
 
-    python run.py
+## Commands
 
-Then open http://127.0.0.1:8000 in your browser. In Codespaces: Ports tab, port 8000, Open in Browser.
-Want the terminal instead? Run: python run.py --terminal
+    ./train.sh
+    ./chat.sh
 
-With a bundle present, run.py turns on Hugging Face offline mode, so Pip makes no network calls to load the model.
+./train.sh trains Pip and resumes automatically if a checkpoint exists. Stop with Ctrl-C and run it again to continue.
 
-## Offline USB stick on Linux (zero internet)
+./chat.sh opens a chat with the trained model. Type /quit to exit.
 
-1. On a machine with internet: do Step 1, then install the Python packages once (pip install -r requirements.txt).
-2. Copy the whole Pip folder to the USB stick, including checkpoints/smollm2. Copy the Python packages too, or use a venv on the stick.
-3. On the offline Linux machine, open a terminal in the Pip folder and run: python3 run.py
-4. Open http://127.0.0.1:8000 in any browser.
+If you see "Permission denied", run once: chmod +x train.sh chat.sh
 
-If checkpoints/smollm2 is missing, run.py tells you so and Pip needs internet once to fetch the model. Run bundle_offline.py to fix that.
+## Files
 
-## What run.py picks
-
-- No NVIDIA GPU (Codespaces, Chromebook, USB laptop): the SmolLM2-135M-Instruct brain, CPU only.
-- NVIDIA GPU and a trained adapter in lora_out/adapter: the 7B LoRA brain (serve_lora.py).
-- NVIDIA GPU, no adapter yet: the SmolLM2 brain, with a note telling you how to train.
-
-No adapter is required. Pip talks out of the box on base weights.
-
-## Big GPU path (7B LoRA)
-
-1. pip install -r requirements-lora.txt
-2. python train_lora.py
-3. python run.py --big   (or python run.py, which picks it automatically when the adapter exists)
-
-See LORA_README.md for details. Training needs about 12 GB of GPU memory.
-
-## Legacy scratch model (not the default)
-
-The original 9.7M-parameter model (model.py, tokenizer.py, train.py, generate.py, setup.sh) still works. Example: python train.py --data input.txt --out checkpoints/pip.pt --steps 5000
+- train.sh, chat.sh: entry points
+- run_pip_pipeline.py: merges the data, trains, validates, and runs chat
+- train.py: training loop
+- model.py, pip_model.py: transformer architecture
+- tokenizer.py: byte-pair encoding tokenizer
+- generate.py: text generation
+- data/pip_curated_corpus.txt, input.txt: training text
+- RUNBOOK.md: detailed run notes
 
 ## Notes
 
-- input.txt is the training text. Replace it with any UTF-8 text file to train on different data.
-- Checkpoints, lora_out/, and memory.json stay on your machine. Do not commit them. The model bundle is large, so copy it to the USB stick by hand rather than through git.
+- Checkpoints in checkpoints/ are generated locally and must not be committed.
+- To train on different text, replace input.txt with any UTF-8 text file.

@@ -1,1 +1,0 @@
-Sovereignty matters to Xavier. His memory and documents stay on his drive. Nothing leaves the machine for a web search or a file write without his explicit Y. Aesthetic: clean monochrome, black background, white text, gray for secondary text. No amber or bright colors in the interface.

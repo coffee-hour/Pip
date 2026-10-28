@@ -24,7 +24,7 @@ BASE_TEXT = "input.txt"
 MERGED = os.path.join("checkpoints", "train_merged.txt")
 CKPT = os.path.join("checkpoints", "pip.pt")
 TOK_JSON = os.path.join("checkpoints", "tokenizer.json")
-CURRENT_ARCH = {"n_layer": 22, "n_head": 16, "n_embd": 2048, "block_size": 512}  # Pip-Beast (~1.11B)
+CURRENT_ARCH = {"n_layer": 22, "n_head": 16, "n_embd": 2048, "block_size": 512}  # Pip Ultra (~1.11B)
 
 
 def fail(msg):
@@ -81,12 +81,12 @@ def check_arch_compat(torch):
 def train(torch, steps, fresh, bf16_cpu, no_bf16):
     on_gpu = torch.cuda.is_available()
     if on_gpu:
-        batch, accum = 4, 8  # Pip-Beast: micro-batch 4 x accum 8 = effective batch 32
+        batch, accum = 4, 8  # Pip Ultra: micro-batch 4 x accum 8 = effective batch 32
         print("  device: cuda (bfloat16 autocast on; falls back to float32 if unsupported)")
     else:
         batch, accum = 8, 4
         print("  device: cpu (float32 by default; add --bf16 to try bfloat16 autocast on CPU)")
-        print("  warning: Pip-Beast on CPU is not practical; use a CUDA GPU with about 24 GB VRAM")
+        print("  warning: Pip Ultra on CPU is not practical; use a CUDA GPU with about 24 GB VRAM")
     cmd = [sys.executable, "train.py", "--data", MERGED, "--out", CKPT,
            "--steps", str(steps), "--batch_size", str(batch), "--accum_steps", str(accum),
            "--save_every", "200", "--eval_every", "250"]

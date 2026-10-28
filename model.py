@@ -1,6 +1,6 @@
 """Pip: a decoder-only transformer language model written from scratch in PyTorch.
 
-Default config is Pip-Beast, about 1.11B parameters: vocab 2048, 22 layers, 16 heads (head_dim 128),
+Default config is Pip Ultra, about 1.11B parameters: vocab 2048, 22 layers, 16 heads (head_dim 128),
 width 2048, context 512. The feed-forward width is 4 x 2048 = 8192 (GELU). The embedding table
 (2048 x 2048, tied with the output head) is about 4.19M; the transformer blocks hold most of the rest.
 
@@ -20,10 +20,10 @@ import torch.nn.functional as F
 @dataclass
 class PipConfig:
     vocab_size: int = 2048     # byte-level BPE vocabulary (256 bytes + merges)
-    block_size: int = 512      # context length (Pip-Beast)
-    n_layer: int = 22          # Pip-Beast depth
+    block_size: int = 512      # context length (Pip Ultra)
+    n_layer: int = 22          # Pip Ultra depth
     n_head: int = 16           # head_dim = n_embd / n_head = 128
-    n_embd: int = 2048         # width (Pip-Beast); must be divisible by n_head
+    n_embd: int = 2048         # width (Pip Ultra); must be divisible by n_head
     dropout: float = 0.1
     bias: bool = False
 

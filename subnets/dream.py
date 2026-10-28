@@ -19,7 +19,7 @@ def consolidate(hip: Hippocampus, keep: int = 500, dup_threshold: float = 0.95) 
     kept, kept_vecs = [], []
     for ep in ranked:
         v = torch.tensor(ep["vec"])
-        if kept_vecs and float(torch.stack(kept_vecs) @ v).__class__ and (torch.stack(kept_vecs) @ v).max() >= dup_threshold:
+        if kept_vecs and float(torch.stack(kept_vecs).matmul(v).max()) >= dup_threshold:
             continue
         kept.append(ep)
         kept_vecs.append(v)

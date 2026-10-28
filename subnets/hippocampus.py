@@ -2,10 +2,12 @@
 
 Pure torch, no embedding model. Each episode stores text, a salience score, and a unit vector.
 Storage is a JSON file so it can be inspected, copied, or deleted by hand.
+zlib.crc32 is used for hashing (not Python hash(), which changes between processes).
 """
 import json
 import re
 import time
+import zlib
 from pathlib import Path
 
 import torch
@@ -17,7 +19,7 @@ _WORD = re.compile(r"[a-z0-9']+")
 def embed(text: str) -> torch.Tensor:
     v = torch.zeros(DIM)
     for w in _WORD.findall(text.lower()):
-        v[hash(w) % DIM] += 1.0
+        v[zlib.crc32(w.encode("utf-8")) % DIM] += 1.0
     n = v.norm()
     return v / n if n > 0 else v
 

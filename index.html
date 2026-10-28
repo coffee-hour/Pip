@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Big Pip | Project Pip</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0a0a0b;--panel:#121214;--panel2:#18181b;--line:#2a2a2e;--mid:#6b6b73;--text:#ececef;--hi:#ffffff;--amber:#ffb000;--dim:#9a9aa3}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--text);font-family:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;font-size:14px;line-height:1.5}
+body{min-height:100vh}
+header{border-bottom:1px solid var(--line);padding:18px 24px;display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between;position:sticky;top:0;background:rgba(10,10,11,.95);z-index:10}
+.brand{font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--hi)}
+.brand small{display:block;font-weight:300;letter-spacing:.12em;color:var(--mid);font-size:11px}
+nav{display:flex;gap:4px;flex-wrap:wrap}
+nav button{background:none;border:1px solid transparent;color:var(--dim);font:inherit;padding:8px 14px;cursor:pointer;text-transform:uppercase;letter-spacing:.1em;font-size:12px}
+nav button:hover{color:var(--hi)}
+nav button.on{color:#0a0a0b;background:var(--hi)}
+main{padding:24px;max-width:1200px;margin:0 auto}
+.tab{display:none}
+.tab.on{display:block}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.2em;color:var(--mid);margin-bottom:14px;font-weight:500}
+.grid{display:grid;gap:16px}
+.g4{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+.g2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);padding:18px;border-radius:2px}
+.stat .v{font-size:26px;font-weight:700;color:var(--hi);letter-spacing:-.02em}
+.stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--mid);margin-top:4px}
+.hero{padding:28px 0 8px}
+.hero h1{font-size:clamp(28px,5vw,52px);font-weight:700;letter-spacing:-.03em;color:var(--hi)}
+.hero p{color:var(--dim);max-width:640px;margin-top:10px}
+.note{font-size:12px;color:var(--mid);margin-top:12px}
+.layers{display:flex;flex-direction:column;gap:3px}
+.layer{display:grid;grid-template-columns:70px 1fr;gap:10px;align-items:center;background:var(--panel2);border:1px solid var(--line);padding:6px 10px;cursor:pointer;transition:all .15s}
+.layer:hover,.layer.on{border-color:var(--hi);background:#222226}
+.layer .idx{color:var(--mid);font-size:12px}
+.layer .bar{height:8px;background:#2a2a2e;position:relative}
+.layer .bar i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#444,#fff)}
+.detail{font-size:13px}
+.detail dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin-top:10px}
+.detail dt{color:var(--mid)}
+.detail dd{color:var(--hi);text-align:right}
+.sl{width:100%;accent-color:#fff;margin:10px 0}
+.map{width:100%;height:auto;display:block}
+.map text{fill:var(--text);font-family:inherit}
+.node{cursor:pointer}
+.node rect{fill:var(--panel2);stroke:var(--line);stroke-width:1.5;transition:all .2s}
+.node:hover rect,.node.on rect{stroke:#fff;fill:#222226}
+.node .t{font-size:13px;font-weight:700;fill:#fff}
+.node .s{font-size:10px;fill:var(--mid)}
+.edge{stroke:#3a3a40;stroke-width:1.5;fill:none;stroke-dasharray:4 4;animation:flow 2s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-16}}
+.core rect{fill:#fff}
+.core text{fill:#0a0a0b}
+.subinfo h3{color:var(--hi);font-size:16px;margin-bottom:6px}
+.subinfo p{color:var(--dim);margin-bottom:10px}
+.subinfo code{color:var(--hi);background:#1d1d21;padding:1px 6px}
+.crt{background:#0b0a06;border:1px solid #3a2a00;position:relative;overflow:hidden;box-shadow:0 0 40px rgba(255,176,0,.06) inset}
+.crt.mono{background:#0b0b0c;border-color:var(--line)}
+.crt::after{content:'';position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(to bottom,rgba(0,0,0,0) 0,rgba(0,0,0,0) 2px,rgba(0,0,0,.25) 3px)}
+.term-head{display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #3a2a00;color:var(--amber);font-size:12px;letter-spacing:.12em;text-transform:uppercase}
+.crt.mono .term-head{color:var(--dim);border-color:var(--line)}
+.log{height:420px;overflow-y:auto;padding:14px;color:var(--amber);text-shadow:0 0 6px rgba(255,176,0,.35);font-size:13px}
+.crt.mono .log{color:var(--text);text-shadow:none}
+.log .me{color:#fff7e0}
+.crt.mono .log .me{color:var(--hi)}
+.log .sys{color:#8a6a1f}
+.crt.mono .log .sys{color:var(--mid)}
+.log .msg{margin-bottom:10px;white-space:pre-wrap}
+.inputrow{display:flex;border-top:1px solid #3a2a00}
+.crt.mono .inputrow{border-color:var(--line)}
+.inputrow span{padding:12px 0 12px 14px;color:var(--amber)}
+.crt.mono .inputrow span{color:var(--hi)}
+.inputrow input{flex:1;background:none;border:0;color:var(--amber);font:inherit;padding:12px 10px;outline:none;text-shadow:0 0 6px rgba(255,176,0,.35)}
+.crt.mono .inputrow input{color:var(--text);text-shadow:none}
+.inputrow button{background:none;border:0;border-left:1px solid #3a2a00;color:var(--amber);font:inherit;padding:0 18px;cursor:pointer}
+.crt.mono .inputrow button{color:var(--hi);border-color:var(--line)}
+.inputrow button:hover{background:#1a1400}
+.crt.mono .inputrow button:hover{background:var(--panel2)}
+.meters .m{margin-bottom:12px}
+.meters .lbl{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:4px}
+.meters .track{height:6px;background:#1f1f23}
+.meters .fill{height:100%;background:#fff;transition:width .4s}
+.pill{display:inline-block;border:1px solid var(--line);padding:2px 8px;font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin:2px 4px 2px 0}
+.pill.on{border-color:#fff;color:#fff}
+footer{border-top:1px solid var(--line);color:var(--mid);font-size:12px;padding:18px 24px;text-align:center;margin-top:30px}
+@media (max-width:640px){main{padding:16px}.log{height:340px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Big Pip<small>PROJECT PIP / 1.11B BEAST CONFIG</small></div>
+  <nav>
+    <button class="on" data-tab="arch">Architecture</button>
+    <button data-tab="subnets">Subnets</button>
+    <button data-tab="console">Sovereign Console</button>
+  </nav>
+</header>
+
+<main>
+<!-- ARCHITECTURE -->
+<section class="tab on" id="arch">
+  <div class="hero">
+    <h1>Pip-Beast.</h1>
+    <p>A decoder-only transformer written from scratch in PyTorch. Sovereign by design: the model, tokenizer and data live in this repo.</p>
+  </div>
+  <div class="grid g4" style="margin:20px 0 28px">
+    <div class="card stat"><div class="v">1.11B</div><div class="k">Parameters</div></div>
+    <div class="card stat"><div class="v">22</div><div class="k">Layers</div></div>
+    <div class="card stat"><div class="v">16</div><div class="k">Heads (head dim 128)</div></div>
+    <div class="card stat"><div class="v">2048</div><div class="k">Width</div></div>
+    <div class="card stat"><div class="v">512</div><div class="k">Context</div></div>
+    <div class="card stat"><div class="v">2048</div><div class="k">Vocab (byte BPE)</div></div>
+    <div class="card stat"><div class="v">8192</div><div class="k">MLP hidden (GELU)</div></div>
+    <div class="card stat"><div class="v">Tied</div><div class="k">Embedding / LM head</div></div>
+  </div>
+  <div class="grid g2">
+    <div class="card">
+      <h2>Layer stack (click a block)</h2>
+      <div class="layers" id="layers"></div>
+      <p class="note">Each block: LayerNorm, causal self-attention, LayerNorm, MLP. Embeddings sit at the top and bottom of the stack.</p>
+    </div>
+    <div class="card detail">
+      <h2>Parameter breakdown</h2>
+      <label class="note" for="lay">Layers: <span id="layN">22</span></label>
+      <input class="sl" id="lay" type="range" min="1" max="22" value="22">
+      <div id="breakdown"></div>
+      <p class="note">Counts computed from model.py with bias=False. LayerNorm counted with weight and bias.</p>
+    </div>
+  </div>
+</section>
+
+<!-- SUBNETS -->
+<section class="tab" id="subnets">
+  <h2>Satellite subnets map</h2>
+  <div class="grid g2">
+    <div class="card">
+      <svg class="map" viewBox="0 0 640 480" role="img" aria-label="Subnet map">
+        <path class="edge" d="M320 90 L140 170"/>
+        <path class="edge" d="M320 90 L500 170"/>
+        <path class="edge" d="M140 210 L140 300"/>
+        <path class="edge" d="M500 210 L500 300"/>
+        <path class="edge" d="M140 340 L260 390"/>
+        <path class="edge" d="M500 340 L380 390"/>
+        <path class="edge" d="M320 90 L320 170"/>
+        <g class="node" data-n="router" transform="translate(40,20)"><rect width="200" height="56"/><text class="t" x="14" y="26">Router</text><text class="s" x="14" y="44">brainstem · specialist routing</text></g>
+        <g class="node core" data-n="core" transform="translate(220,160)"><rect width="200" height="60"/><text class="t" x="14" y="28">PipLM 1.11B</text><text class="s" x="14" y="46" style="fill:#333">generate() core</text></g>
+        <g class="node" data-n="thalamus" transform="translate(40,160)"><rect width="200" height="56"/><text class="t" x="14" y="26">Thalamus</text><text class="s" x="14" y="44">sensory · valence · threat</text></g>
+        <g class="node" data-n="endocrine" transform="translate(400,160)"><rect width="200" height="56"/><text class="t" x="14" y="26">Endocrine</text><text class="s" x="14" y="44">dopamine · serotonin · cortisol · oxytocin</text></g>
+        <g class="node" data-n="hippocampus" transform="translate(40,300)"><rect width="200" height="56"/><text class="t" x="14" y="26">Hippocampus</text><text class="s" x="14" y="44">episodic memory · dim 512</text></g>
+        <g class="node" data-n="critic" transform="translate(400,300)"><rect width="200" height="56"/><text class="t" x="14" y="26">Critic</text><text class="s" x="14" y="44">verdict · voice · authenticity</text></g>
+        <g class="node" data-n="dream" transform="translate(220,390)"><rect width="200" height="56"/><text class="t" x="14" y="26">Dream / Replay</text><text class="s" x="14" y="44">offline consolidation</text></g>
+      </svg>
+      <p class="note">Click a node for details. Map reflects the subnets/ folder in this repo.</p>
+    </div>
+    <div class="card subinfo" id="subinfo"></div>
+  </div>
+</section>
+
+<!-- CONSOLE -->
+<section class="tab" id="console">
+  <h2>Sovereign Console preview</h2>
+  <div class="grid g2" style="grid-template-columns:2fr 1fr">
+    <div class="card crt" id="term">
+      <div class="term-head"><span>PIP // SOVEREIGN LINK</span><span id="tstate">ONLINE</span></div>
+      <div class="log" id="log"></div>
+      <form class="inputrow" id="form"><span>&gt;</span><input id="inp" autocomplete="off" placeholder="type a message, or /help" aria-label="message"><button type="submit">SEND</button></form>
+    </div>
+    <div class="card">
+      <h2>Endocrine state</h2>
+      <div class="meters" id="meters"></div>
+      <h2 style="margin-top:18px">Last turn</h2>
+      <div id="turn" class="note"></div>
+      <div style="margin-top:12px">
+        <span class="pill" id="pRoute">chat</span><span class="pill" id="pTemp">temp --</span><span class="pill" id="pK">top-k --</span><span class="pill" id="pCritic">critic --</span>
+      </div>
+      <p class="note" style="margin-top:16px">Preview only. Replies are canned in this page and no model runs in the browser. The routing, hormone decay and sampling rules are ported from router.py, thalamus.py and endocrine.py.</p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>Big Pip UI, zero build. Source: model.py, subnets/, train.py in this repo.</footer>
+
+<script>
+/* ---------- Architecture math (model.py, bias=False) ---------- */
+const C = {vocab:2048, block:512, layers:22, heads:16, width:2048, mlp:8192};
+const perBlock = {
+  attn: C.width*3*C.width + C.width*C.width,       // qkv + proj
+  mlp:  C.width*C.mlp + C.mlp*C.width,            // fc + proj
+  ln:   2*2*C.width                               // two LayerNorms, weight+bias
+};
+perBlock.total = perBlock.attn + perBlock.mlp + perBlock.ln;
+const embed = C.vocab*C.width, pos = C.block*C.width, lnf = 2*C.width;
+const fmt = n => n.toLocaleString('en-US');
+
+const layersEl = document.getElementById('layers');
+function buildLayers(){
+  let html = '';
+  const maxB = perBlock.total;
+  html += `<div class="layer" data-i="-1"><span class="idx">LM head</span><div class="bar"><i style="width:4%"></i></div></div>`;
+  for(let i=C.layers;i>=1;i--){
+    html += `<div class="layer" data-i="${i}"><span class="idx">L${String(i).padStart(2,'0')}</span><div class="bar"><i style="width:${(perBlock.total/maxB*100).toFixed(1)}%"></i></div></div>`;
+  }
+  html += `<div class="layer" data-i="0"><span class="idx">Embed</span><div class="bar"><i style="width:4%"></i></div></div>`;
+  layersEl.innerHTML = html;
+}
+let selected = null;
+layersEl.addEventListener('click', e=>{
+  const el = e.target.closest('.layer'); if(!el) return;
+  document.querySelectorAll('.layer').forEach(x=>x.classList.remove('on'));
+  el.classList.add('on');
+  const i = +el.dataset.i;
+  const info = i===-1 ? ['LM head (tied)', 'vocab x width = '+fmt(embed)+' (shared, counted once)']
+    : i===0 ? ['Token + position embeddings', 'tok '+fmt(embed)+' + pos '+fmt(pos)]
+    : ['Block '+i, 'attn '+fmt(perBlock.attn)+' · mlp '+fmt(perBlock.mlp)+' · ln '+fmt(perBlock.ln)];
+  document.getElementById('breakdown').dataset.sel = info.join('|');
+  selected = info; renderBreakdown();
+});
+const lay = document.getElementById('lay');
+lay.addEventListener('input', renderBreakdown);
+function renderBreakdown(){
+  const n = +lay.value; document.getElementById('layN').textContent = n;
+  const blocks = perBlock.total*n;
+  const total = blocks + embed + pos + lnf;
+  const rows = [
+    ['Attention (qkv + proj)', perBlock.attn*n],
+    ['MLP (fc + proj, 4x)', perBlock.mlp*n],
+    ['LayerNorm', perBlock.ln*n + lnf],
+    ['Token embedding (tied)', embed],
+    ['Position embedding', pos]
+  ];
+  let h = '<dl>'+rows.map(([k,v])=>`<dt>${k}</dt><dd>${fmt(v)}</dd>`).join('')
+    +`<dt><b>Total</b></dt><dd><b>${fmt(total)}</b></dd></dl>`;
+  h += `<p class="note">${(total/1e9).toFixed(3)}B parameters. Full config is 22 layers, which gives 1,112,723,456.</p>`;
+  if(selected) h += `<p class="note" style="margin-top:10px;color:#fff">Selected: ${selected[0]}<br>${selected[1]}</p>`;
+  document.getElementById('breakdown').innerHTML = h;
+}
+buildLayers(); renderBreakdown();
+
+/* ---------- Subnets ---------- */
+const INFO = {
+  router:{t:'Router',s:'subnets/router.py',d:'Brainstem. Keyword rules classify input into chat, math, code, or memory. Order matters: code beats math, and memory beats chat. No model call.',c:['ROUTES = math, code, memory, chat']},
+  thalamus:{t:'Thalamus',s:'subnets/thalamus.py',d:'Sensory stage. Lexicon-based stimulus with valence in [-1, 1] (negative to positive), arousal in [0, 1] (calm to intense), and threat in [0, 1] (conflict or danger words).',c:['perceive(text) -> Stimulus(valence, arousal, threat)']},
+  endocrine:{t:'Endocrine',s:'subnets/endocrine.py',d:'Synthetic neurochemistry. Four levels in [0, 1] relax to baseline with half-lives in turns: dopamine 2, cortisol 5, oxytocin 8, serotonin 12. High cortisol narrows sampling; dopamine widens it. Temperature in [0.4, 1.2], top-k at least 10.',c:['BASELINE: dopamine 0.5, serotonin 0.6, cortisol 0.2, oxytocin 0.4']},
+  hippocampus:{t:'Hippocampus',s:'subnets/hippocampus.py',d:'Episodic memory. Episodes are stored as JSON with 512-dim hashed bag-of-words vectors (zlib.crc32, stable across runs). Recall uses cosine similarity.',c:['DIM = 512']},
+  critic:{t:'Critic',s:'subnets/critic.py',d:'Prefrontal filter. Scores a reply for repetition, length, role-marker leaks, and assistant boilerplate. Passing threshold is 0.6. Heuristic, not a guarantee.',c:['evaluate(reply) -> Verdict(score, issues)']},
+  dream:{t:'Dream / Replay',s:'subnets/dream.py',d:'Offline consolidation, run between sessions. Drops near-duplicate episodes (cosine at or above 0.95) and keeps the most salient up to a budget. Only reads and rewrites the local episode file.',c:['python -m subnets.dream checkpoints/episodes.json --keep 500']},
+  core:{t:'PipLM 1.11B',s:'model.py / generate.py',d:'The main transformer. The subnets wrap generate() with hormone-shaped sampling and a critic retry. The core model code is unchanged.',c:['PipConfig(vocab 2048, block 512, layers 22, heads 16, width 2048)']}
+};
+function showNode(k){
+  const i = INFO[k];
+  document.querySelectorAll('.node').forEach(n=>n.classList.toggle('on', n.dataset.n===k));
+  document.getElementById('subinfo').innerHTML = `<h3>${i.t}</h3><p><code>${i.s}</code></p><p>${i.d}</p>`+i.c.map(x=>`<p><code>${x}</code></p>`).join('');
+}
+document.querySelectorAll('.node').forEach(n=>n.addEventListener('click',()=>showNode(n.dataset.n)));
+showNode('core');
+
+/* ---------- Sovereign console (ports of router, thalamus, endocrine, critic logic) ---------- */
+const POS=new Set('thanks great love happy nice good glad awesome proud friend'.split(' '));
+const NEG=new Set('sad bad hate angry tired awful stupid lonely hurt broken'.split(' '));
+const THREAT=new Set('deadline urgent fail failed danger threat panic emergency late'.split(' '));
+function perceive(text){
+  const words=(text.toLowerCase().match(/[a-z']+/g)||[]);
+  const n=Math.max(1,words.length);
+  const pos=words.filter(w=>POS.has(w)).length, neg=words.filter(w=>NEG.has(w)).length, th=words.filter(w=>THREAT.has(w)).length;
+  const valence=Math.max(-1,Math.min(1,(pos-neg)/Math.max(1,pos+neg)));
+  const excl=Math.min(1,(text.split('!').length-1)*0.25);
+  const letters=[...text].filter(c=>/[a-zA-Z]/.test(c)).length||1;
+  const caps=[...text].filter(c=>/[A-Z]/.test(c)).length/letters;
+  const arousal=Math.min(1,0.3*excl+0.5*caps+0.2*Math.min(1,Math.abs(valence))+0.1*(pos+neg+th)/n*5);
+  const threat=Math.min(1,0.5*th+0.2*neg);
+  return {valence,arousal,threat};
+}
+function route(text){
+  if(/```|\b(def|class|import|function|bug|traceback|python|javascript|compile|stack trace)\b/i.test(text)) return 'code';
+  if(/(\d\s*[-+*/^%]\s*\d)|\b(solve|integral|derivative|sqrt|sum of|calculate)\b/i.test(text)) return 'math';
+  if(/\b(remember|last time|earlier|you said|we talked|recall)\b/i.test(text)) return 'memory';
+  return 'chat';
+}
+const BASE={dopamine:.5,serotonin:.6,cortisol:.2,oxytocin:.4}, HALF={dopamine:2,serotonin:12,cortisol:5,oxytocin:8};
+const clip=x=>Math.max(0,Math.min(1,x));
+const L={...BASE};
+function tick(s){
+  for(const k in BASE){ const keep=Math.pow(.5,1/HALF[k]); L[k]=BASE[k]+(L[k]-BASE[k])*keep; }
+  L.dopamine=clip(L.dopamine+0.2*Math.max(0,s.valence)*s.arousal);
+  L.serotonin=clip(L.serotonin+0.1*s.valence-0.05*s.threat);
+  L.cortisol=clip(L.cortisol+0.3*s.threat+0.1*Math.max(0,-s.valence));
+  L.oxytocin=clip(L.oxytocin+0.1*Math.max(0,s.valence)*(1-s.threat));
+}
+function sampling(){
+  const temp=Math.min(1.2,Math.max(.4,.8*(1+.25*L.dopamine-.2*L.cortisol)));
+  const k=Math.max(10,Math.round(40*(1+.5*L.serotonin-.5*L.cortisol)));
+  return {temp:temp.toFixed(3),k};
+}
+function evaluate(reply){
+  const t=reply.trim(); if(!t) return {score:0,issues:['empty']};
+  let s=1; const issues=[];
+  if(t.length>1200){issues.push('too long');s-=.2;}
+  const w=t.toLowerCase().split(/\s+/);
+  if(w.length>=8 && new Set(w).size/w.length<.4){issues.push('repetitive');s-=.4;}
+  if(/^\s*(User|Pip)\s*:/m.test(t)){issues.push('role marker leaked');s-=.3;}
+  if(/as an ai( language model)?|i am just a|i cannot feel|i'm just an ai/i.test(t)){issues.push('generic assistant boilerplate');s-=.3;}
+  return {score:Math.max(0,+s.toFixed(3)),issues};
+}
+const REPLIES={
+  chat:['I am here. Tell me what is on your mind and I will keep it between us.','That sounds like it matters to you. What part feels heaviest right now?','Good to hear from you. What would make today feel a little lighter?'],
+  math:['Send me the expression and I will evaluate it with the exact-arithmetic specialist. This preview does not compute anything.'],
+  code:['Paste the snippet or traceback. The syntax check parses it without running it.'],
+  memory:['I have a note of that. In the full build, the hippocampus would recall the closest episodes here.']
+};
+const logEl=document.getElementById('log');
+function say(who,text){
+  const d=document.createElement('div'); d.className='msg '+(who==='me'?'me':who==='sys'?'sys':'');
+  d.textContent=(who==='me'?'you > ':who==='sys'?'// ':'pip > ')+text; logEl.appendChild(d); logEl.scrollTop=logEl.scrollHeight;
+}
+function renderMeters(){
+  const cfg=[['dopamine','#ffffff'],['serotonin','#cfcfd6'],['cortisol','#8a8a92'],['oxytocin','#5e5e66']];
+  document.getElementById('meters').innerHTML=cfg.map(([k])=>`<div class="m"><div class="lbl"><span>${k}</span><span>${L[k].toFixed(2)}</span></div><div class="track"><div class="fill" style="width:${(L[k]*100).toFixed(0)}%"></div></div></div>`).join('');
+}
+function setPills(r,temp,k,crit){
+  document.getElementById('pRoute').textContent=r;
+  document.getElementById('pTemp').textContent='temp '+temp;
+  document.getElementById('pK').textContent='top-k '+k;
+  document.getElementById('pCritic').textContent='critic '+crit;
+  document.getElementById('pRoute').classList.add('on');
+}
+function handle(text){
+  if(text==='/help'){say('sys','commands: /help, /state, /clear. Anything else is a chat turn.');return;}
+  if(text==='/clear'){logEl.innerHTML='';say('sys','session cleared');return;}
+  if(text==='/state'){say('sys',Object.entries(L).map(([k,v])=>k+'='+v.toFixed(2)).join('  '));return;}
+  const s=perceive(text); tick(s); const r=route(text); const {temp,k}=sampling();
+  const pool=REPLIES[r]; const reply=pool[Math.floor(Math.random()*pool.length)];
+  const v=evaluate(reply);
+  say('me',text); say('pip',reply);
+  document.getElementById('turn').innerHTML=`valence ${s.valence.toFixed(2)} · arousal ${s.arousal.toFixed(2)} · threat ${s.threat.toFixed(2)}<br>critic ${v.score.toFixed(2)} ${v.issues.length?'('+v.issues.join(', ')+')':'(pass)'}`;
+  setPills(r,temp,k,v.score.toFixed(2));
+  renderMeters();
+}
+document.getElementById('form').addEventListener('submit',e=>{
+  e.preventDefault(); const i=document.getElementById('inp'); const t=i.value.trim(); if(!t) return; i.value=''; handle(t);
+});
+say('sys','Sovereign link open. Mock preview: replies are canned, no model runs in the browser. Type /help.');
+renderMeters();
+
+/* ---------- Tabs ---------- */
+document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.id===b.dataset.tab));
+  window.scrollTo({top:0,behavior:'smooth'});
+}));
+</script>
+</body>
+</html>

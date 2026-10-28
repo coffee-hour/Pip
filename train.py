@@ -1,6 +1,6 @@
 """Train Pip on a plain-text file: BPE tokenizer, AdamW, warmup + cosine LR, cross-entropy loss.
 
-Default model is Pip-Medium (about 26.5M parameters): 8 layers, 8 heads, width 512, context 512.
+Default model is Pip-Beast (about 1.11B parameters): 22 layers, 16 heads, width 2048, context 512.
 
 Usage: python train.py --data input.txt --out checkpoints/pip.pt --steps 5000
 
@@ -8,7 +8,7 @@ AUTO-RESUME: if the --out checkpoint already exists, training continues from it 
 (model, optimizer, step counter, and tokenizer are all restored). Use --fresh to ignore an
 existing checkpoint and start over. --resume PATH resumes from a specific file. The architecture
 of a resumed run always comes from the checkpoint itself, so a checkpoint of a different size
-must be moved aside before training Pip-Medium. run_pip_pipeline.py does this automatically
+must be moved aside before training a different size. run_pip_pipeline.py does this automatically
 (check_arch_compat). Running train.py directly does not check the size, so use --fresh or move
 the old checkpoint aside yourself.
 
@@ -166,9 +166,9 @@ def main():
     p.add_argument("--resume", default=None, help="resume from this checkpoint path")
     p.add_argument("--fresh", action="store_true", help="ignore an existing --out checkpoint and start over")
     p.add_argument("--steps", type=int, default=5000, help="total optimizer step target (not additional steps)")
-    p.add_argument("--batch_size", type=int, default=32, help="micro-batch size per forward pass")
+    p.add_argument("--batch_size", type=int, default=4, help="micro-batch size per forward pass (Pip-Beast needs a small one for 24 GB VRAM)")
     p.add_argument("--accum_steps", type=int, default=1, help="micro-batches per optimizer step (gradient accumulation)")
-    p.add_argument("--lr", type=float, default=6e-4, help="peak learning rate (Pip-Medium)")
+    p.add_argument("--lr", type=float, default=3e-4, help="peak learning rate (Pip-Beast)")
     p.add_argument("--warmup", type=int, default=500, help="linear warmup optimizer steps")
     p.add_argument("--clip", type=float, default=1.0, help="gradient norm clip")
     p.add_argument("--log_every", type=int, default=10)
@@ -177,9 +177,9 @@ def main():
     p.add_argument("--eval_at_start", action="store_true")
     p.add_argument("--save_every", type=int, default=200, help="save a checkpoint every N optimizer steps")
     p.add_argument("--vocab_size", type=int, default=2048)
-    p.add_argument("--n_layer", type=int, default=8)
-    p.add_argument("--n_head", type=int, default=8)
-    p.add_argument("--n_embd", type=int, default=512)
+    p.add_argument("--n_layer", type=int, default=22)
+    p.add_argument("--n_head", type=int, default=16)
+    p.add_argument("--n_embd", type=int, default=2048)
     p.add_argument("--block_size", type=int, default=512)
     p.add_argument("--threads", type=int, default=0, help="CPU threads for torch (0 = torch default)")
     p.add_argument("--bf16", action="store_true", help="bfloat16 autocast on CPU or CUDA (falls back to float32)")

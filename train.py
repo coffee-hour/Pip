@@ -1,6 +1,6 @@
 """Train Pip on a plain-text file: BPE tokenizer, AdamW, warmup + cosine LR, cross-entropy loss.
 
-Default model is Pip-Beast (about 1.11B parameters): 22 layers, 16 heads, width 2048, context 512.
+Default model is Pip Ultra (about 1.11B parameters): 22 layers, 16 heads, width 2048, context 512.
 
 Usage: python train.py --data input.txt --out checkpoints/pip.pt --steps 5000
 
@@ -166,9 +166,9 @@ def main():
     p.add_argument("--resume", default=None, help="resume from this checkpoint path")
     p.add_argument("--fresh", action="store_true", help="ignore an existing --out checkpoint and start over")
     p.add_argument("--steps", type=int, default=5000, help="total optimizer step target (not additional steps)")
-    p.add_argument("--batch_size", type=int, default=4, help="micro-batch size per forward pass (Pip-Beast needs a small one for 24 GB VRAM)")
+    p.add_argument("--batch_size", type=int, default=4, help="micro-batch size per forward pass (Pip Ultra needs a small one for 24 GB VRAM)")
     p.add_argument("--accum_steps", type=int, default=1, help="micro-batches per optimizer step (gradient accumulation)")
-    p.add_argument("--lr", type=float, default=3e-4, help="peak learning rate (Pip-Beast)")
+    p.add_argument("--lr", type=float, default=3e-4, help="peak learning rate (Pip Ultra)")
     p.add_argument("--warmup", type=int, default=500, help="linear warmup optimizer steps")
     p.add_argument("--clip", type=float, default=1.0, help="gradient norm clip")
     p.add_argument("--log_every", type=int, default=10)

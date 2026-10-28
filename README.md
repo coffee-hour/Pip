@@ -23,7 +23,7 @@ NVIDIA GPU: install the CUDA build of torch from https://pytorch.org instead.
 
 If you see "Permission denied", run once: chmod +x train.sh chat.sh
 
-## Web UI (Big Pip)
+## Web UI (Pip Ultra)
 
 index.html is a single zero-build page: architecture and parameter breakdown, an interactive satellite subnets map, and a mock Sovereign Console. It needs no install and no build step. Fonts load from Google Fonts; everything else is local.
 
@@ -40,7 +40,7 @@ Then visit http://localhost:8000. The console tab is a preview only: its replies
 
 ## Files
 
-- index.html: Big Pip web UI (zero build, open directly or serve)
+- index.html: Pip Ultra web UI (zero build, open directly or serve)
 - train.sh, chat.sh: entry points
 - run_pip_pipeline.py: merges the data, trains, validates, and runs chat
 - train.py: training loop

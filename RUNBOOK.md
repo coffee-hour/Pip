@@ -9,9 +9,9 @@
 
 NVIDIA GPU: install the CUDA build of torch from https://pytorch.org instead. Training then uses bfloat16 automatically.
 
-## Model size and hardware (Pip-Beast)
+## Model size and hardware (Pip Ultra)
 
-The default model is Pip-Beast: about 1.11B parameters, 22 layers, 16 heads, width 2048, context 512, vocab 2048.
+The default model is Pip Ultra: about 1.11B parameters, 22 layers, 16 heads, width 2048, context 512, vocab 2048.
 
 - GPU required. Plan for an NVIDIA GPU with about 24 GB of VRAM. Training keeps fp32 weights, gradients, and AdamW states, about 18 GB before activations.
 - CPU training is not practical at this size.

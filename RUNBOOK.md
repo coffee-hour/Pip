@@ -15,7 +15,7 @@ The default model is Pip-Beast: about 1.11B parameters, 22 layers, 16 heads, wid
 
 - GPU required. Plan for an NVIDIA GPU with about 24 GB of VRAM. Training keeps fp32 weights, gradients, and AdamW states, about 18 GB before activations.
 - CPU training is not practical at this size.
-- Micro-batch is 4 with 8 accumulation steps on GPU (effective batch 32). If you run out of memory, lower the batch with ./train.sh --batch_size 2 when calling train.py directly, or raise accumulation to keep the effective batch.
+- On GPU, run_pip_pipeline.py uses micro-batch 4 with 8 accumulation steps (effective batch 32). If you run out of memory, edit the batch line in train() in run_pip_pipeline.py to a smaller micro-batch and raise accumulation to keep the effective batch the same. train.sh does not accept --batch_size.
 - Disk: each checkpoint is about 13 GB (weights plus optimizer state). Saves write a temp file first, so keep about 30 GB free.
 - Moving from the old 26.5M Pip-Medium: run_pip_pipeline.py moves a checkpoint of a different size to checkpoints/pip_old_arch.pt and starts fresh. Delete that file once you no longer need it.
 

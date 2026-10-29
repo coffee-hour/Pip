@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pip one-command launcher. Runs run_pip_pipeline.py, which merges the corpus, trains,
 # validates, and auto-resumes from checkpoints/pip.pt.
-#   - Installs requirements.txt if torch is missing.
+#   - Installs requirements.txt if torch or numpy is missing.
 #   - Downloads TinyShakespeare to input.txt only if input.txt is missing (never overwrites it).
 #   - Device: CUDA, then MPS, then CPU (train.py picks the device itself).
 #   - Mixed precision: bf16 autocast on CUDA (when the GPU supports it), fp32 on MPS and CPU.
@@ -17,7 +17,7 @@ elif command -v python >/dev/null 2>&1; then PY=python
 else echo "ERROR: Python 3 not found." >&2; exit 1
 fi
 
-if ! "$PY" -c "import torch" >/dev/null 2>&1; then
+if ! "$PY" -c "import torch, numpy" >/dev/null 2>&1; then
   echo "Installing dependencies from requirements.txt..."
   "$PY" -m pip install -q -r requirements.txt
 fi
